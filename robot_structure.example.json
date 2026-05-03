@@ -1,0 +1,7 @@
+{
+  "ArmSize": 1,
+  "JointSize": [6],
+  "GripperSize": 0,
+  "GripperJointSize": [0],
+  "sample_time": 0.001
+}
