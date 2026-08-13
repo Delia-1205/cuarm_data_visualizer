@@ -2,124 +2,229 @@
 (function () {
   "use strict";
 
-  const META_FIELD_NAMES = [
-    "running_cost",
-    "robotics_total_cost",
-    "communication_cost",
-    "hardware_communication_cost",
-    "robotics_setup_cost",
-    "robotics_Null_cost",
-    "robotics_FK_cost",
-    "robotics_IK_cost",
-    "robotics_ID_cost",
-    "robotics_simulation_addition_cost",
-    "planner_mode",
-    "planner_status",
-    "command_mode",
-  ];
+  /** Fallback when log_schema.json 未加载；须与 log_utils.ipp::writeToLogFile 一致 */
+  const FALLBACK_SCHEMA = {
+    version: 1,
+    meta: [
+      "running_cost",
+      "robotics_total_cost",
+      "hardware_communication_cost",
+      "communication_cost",
+      "motor_communication_cost",
+      "gripper_communication_cost",
+      "button_communication_cost",
+      "actuator_mode",
+      "control_strategy",
+      "branch_state",
+      "system_state",
+      "plan_result",
+      "system_diagnostic_flags",
+      "button_state",
+      "simulation",
+      "target_type",
+    ],
+    per_arm: [
+      {
+        kind: "per_joint_interleaved",
+        fields: [
+          "motor_target",
+          "joint_position",
+          "joint_velocity",
+          "joint_acceleration",
+          "joint_torque",
+          "motor_position",
+          "motor_velocity",
+          "motor_torque",
+        ],
+      },
+      {
+        kind: "fixed",
+        name: "tool_pose",
+        labels: ["x", "y", "z", "qw", "qx", "qy", "qz"],
+      },
+      { kind: "per_joint", field: "target_before_interpolation" },
+      { kind: "per_joint", field: "sliced_tar" },
+      { kind: "per_joint", field: "pid_cmd" },
+      { kind: "per_joint", field: "guard_pos_cmd" },
+      { kind: "per_joint", field: "sat_cmd" },
+      { kind: "per_joint", field: "jump_cmd" },
+      {
+        kind: "fixed",
+        name: "task_target_before_interpolation",
+        labels: ["x", "y", "z", "rx", "ry", "rz"],
+      },
+      {
+        kind: "fixed",
+        name: "task_sliced_tar",
+        labels: ["x", "y", "z", "rx", "ry", "rz"],
+      },
+      {
+        kind: "fixed",
+        name: "task_pose",
+        labels: ["x", "y", "z", "rx", "ry", "rz"],
+      },
+      { kind: "per_joint", field: "joint_gravity" },
+      { kind: "per_joint", field: "friction" },
+      { kind: "per_joint", field: "gravity_kd_effect" },
+      { kind: "per_joint", field: "filtered_joint_vel" },
+      { kind: "per_joint", field: "arm_diagnostic_flags" },
+    ],
+    per_gripper: [
+      { kind: "per_joint", field: "gripper_target" },
+      { kind: "per_joint", field: "gripper_position" },
+      { kind: "per_joint", field: "gripper_diagnostic_flags" },
+    ],
+    categories: {
+      control: [
+        "motor_target",
+        "target_before_interpolation",
+        "sliced_tar",
+        "pid_cmd",
+        "guard_pos_cmd",
+        "sat_cmd",
+        "jump_cmd",
+        "task_target_before_interpolation",
+        "task_sliced_tar",
+        "gripper_target",
+      ],
+      state: [
+        "joint_position",
+        "joint_velocity",
+        "joint_acceleration",
+        "motor_position",
+        "motor_velocity",
+        "tool_pose",
+        "task_pose",
+        "filtered_joint_vel",
+        "gripper_position",
+      ],
+      mechanics: [
+        "joint_torque",
+        "motor_torque",
+        "joint_gravity",
+        "friction",
+        "gravity_kd_effect",
+      ],
+    },
+  };
 
-  const JOINT_FIELD_NAMES = [
-    "sliced_tar",
-    "motor_target",
-    "joint_position",
-    "joint_velocity",
-    "joint_acceleration",
-    "motor_position",
-    "motor_velocity",
-    "motor_torque",
-    "target_before_interpolation",
-    "motor_raw_position",
-    "joint_gravity",
-    "gravity",
-    "sat_motor_cmd",
-    "joint_impedance",
-    "impedance",
-    "joint_torque",
-    "torque_sensor_raw",
-    "torque_sensor",
-    "encoder_sensor_raw",
-    "friction",
-    "gravity_kd_effect",
-    "filtered_joint_vel",
-  ];
+  var logSchema = FALLBACK_SCHEMA;
 
-  const CONTROL = new Set([
-    "sliced_tar",
-    "motor_target",
-    "target_before_interpolation",
-    "sat_motor_cmd",
-    "gripper_command",
-    "gripper_act_set_command",
-  ]);
-  const STATE = new Set([
-    "joint_position",
-    "joint_velocity",
-    "joint_acceleration",
-    "motor_position",
-    "motor_velocity",
-    "motor_raw_position",
-    "encoder_sensor_raw",
-    "filtered_joint_vel",
-    "gripper_position",
-  ]);
+  function categorySetsFromSchema(schema) {
+    const cats = (schema && schema.categories) || {};
+    return {
+      control: new Set(cats.control || []),
+      state: new Set(cats.state || []),
+      mechanics: new Set(cats.mechanics || []),
+    };
+  }
 
-  function jointFieldCategory(name) {
-    if (CONTROL.has(name)) return "control";
-    if (STATE.has(name)) return "state";
+  function fieldCategory(fieldName, schema) {
+    if (fieldName.indexOf("gripper_") === 0) return "gripper";
+    if (fieldName.indexOf("diagnostic") !== -1) return "meta";
+    const sets = categorySetsFromSchema(schema);
+    const base = fieldName.replace(/_(x|y|z|qw|qx|qy|qz|rx|ry|rz)$/, "");
+    if (sets.control.has(fieldName) || sets.control.has(base)) return "control";
+    if (sets.state.has(fieldName) || sets.state.has(base)) return "state";
+    if (sets.mechanics.has(fieldName) || sets.mechanics.has(base)) return "mechanics";
     return "mechanics";
   }
 
-  function expectedColumnCount(s) {
-    let n = META_FIELD_NAMES.length;
-    for (let a = 0; a < s.ArmSize; a++) {
-      const jn = s.JointSize[a] || 0;
-      n += jn * JOINT_FIELD_NAMES.length;
-    }
-    for (let g = 0; g < s.GripperSize; g++) {
-      const gj = s.GripperJointSize[g] || 0;
-      n += gj * 3;
-    }
-    return n;
-  }
-
-  function buildSeriesColumns(s) {
-    const cols = [];
-    let idx = 0;
-    for (let i = 0; i < META_FIELD_NAMES.length; i++) {
-      cols.push({ index: idx++, key: "Meta." + META_FIELD_NAMES[i], category: "meta" });
-    }
-    for (let arm = 0; arm < s.ArmSize; arm++) {
-      const jn = s.JointSize[arm] || 0;
-      for (let j = 0; j < jn; j++) {
-        for (let f = 0; f < JOINT_FIELD_NAMES.length; f++) {
-          const fname = JOINT_FIELD_NAMES[f];
+  function expandArmBlock(block, arm, jointCount, schema, cols, idxRef) {
+    if (block.kind === "per_joint_interleaved") {
+      for (let j = 0; j < jointCount; j++) {
+        for (let f = 0; f < block.fields.length; f++) {
+          const fname = block.fields[f];
           cols.push({
-            index: idx++,
+            index: idxRef.i++,
             key: "Arm" + arm + ".J" + (j + 1) + "." + fname,
-            category: jointFieldCategory(fname),
+            category: fieldCategory(fname, schema),
           });
         }
       }
+      return;
     }
-    for (let pass = 0; pass < 3; pass++) {
-      const suf =
-        pass === 0
-          ? "gripper_command"
-          : pass === 1
-            ? "gripper_act_set_command"
-            : "gripper_position";
-      for (let g = 0; g < s.GripperSize; g++) {
-        const gj = s.GripperJointSize[g] || 0;
+    if (block.kind === "per_joint") {
+      for (let j = 0; j < jointCount; j++) {
+        cols.push({
+          index: idxRef.i++,
+          key: "Arm" + arm + ".J" + (j + 1) + "." + block.field,
+          category: fieldCategory(block.field, schema),
+        });
+      }
+      return;
+    }
+    if (block.kind === "fixed") {
+      const labels = block.labels || [];
+      for (let k = 0; k < labels.length; k++) {
+        const fname = block.name + "_" + labels[k];
+        cols.push({
+          index: idxRef.i++,
+          key: "Arm" + arm + "." + fname,
+          category: fieldCategory(block.name, schema),
+        });
+      }
+    }
+  }
+
+  function buildSeriesColumnsFromSchema(s, schema) {
+    const sch = schema || logSchema;
+    const cols = [];
+    const idxRef = { i: 0 };
+    const meta = sch.meta || [];
+    for (let i = 0; i < meta.length; i++) {
+      cols.push({ index: idxRef.i++, key: "Meta." + meta[i], category: "meta" });
+    }
+    for (let arm = 0; arm < s.ArmSize; arm++) {
+      const jn = s.JointSize[arm] || 0;
+      const blocks = sch.per_arm || [];
+      for (let b = 0; b < blocks.length; b++) {
+        expandArmBlock(blocks[b], arm, jn, sch, cols, idxRef);
+      }
+    }
+    const gBlocks = sch.per_gripper || [];
+    for (let g = 0; g < s.GripperSize; g++) {
+      const gj = s.GripperJointSize[g] || 0;
+      for (let b = 0; b < gBlocks.length; b++) {
+        const block = gBlocks[b];
         for (let j = 0; j < gj; j++) {
           cols.push({
-            index: idx++,
-            key: "Gripper" + (g + 1) + ".J" + (j + 1) + "." + suf,
+            index: idxRef.i++,
+            key: "Gripper" + (g + 1) + ".J" + (j + 1) + "." + block.field,
             category: "gripper",
           });
         }
       }
     }
     return cols;
+  }
+
+  function buildSeriesColumnsFromNames(columnNames, schema) {
+    const sch = schema || logSchema;
+    const cols = [];
+    for (let i = 0; i < columnNames.length; i++) {
+      const key = columnNames[i];
+      let category = "mechanics";
+      if (key.indexOf("Meta.") === 0) category = "meta";
+      else if (key.indexOf("Gripper") === 0) category = "gripper";
+      else {
+        const tail = key.slice(key.lastIndexOf(".") + 1);
+        category = fieldCategory(tail, sch);
+      }
+      cols.push({ index: i, key: key, category: category });
+    }
+    return cols;
+  }
+
+  function expectedColumnCount(s) {
+    return buildSeriesColumns(s).length;
+  }
+
+  function buildSeriesColumns(s) {
+    if (s && Array.isArray(s.columns) && s.columns.length) {
+      return buildSeriesColumnsFromNames(s.columns, logSchema);
+    }
+    return buildSeriesColumnsFromSchema(s, logSchema);
   }
 
   function parseLineNumbers(line) {
@@ -138,26 +243,44 @@
   function parseLogText(text, structure, onProgress) {
     return new Promise(function (resolve, reject) {
       const lines = text.split("\n");
-      const nonempty = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].trim()) nonempty.push(lines[i]);
-      }
-      const rowCount = nonempty.length;
-      if (rowCount === 0) {
-        reject(new Error("空文件或没有数据行"));
-        return;
-      }
       const seriesMeta = buildSeriesColumns(structure);
       const expected = expectedColumnCount(structure);
-      const first = parseLineNumbers(nonempty[0]);
-      if (!first || first.length !== expected) {
+      const validRows = [];
+      let skipped = 0;
+      let firstBad = null;
+
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        const nums = parseLineNumbers(lines[i]);
+        if (!nums || nums.length !== expected) {
+          skipped++;
+          if (!firstBad) {
+            firstBad = {
+              line: i + 1,
+              cols: nums ? nums.length : 0,
+            };
+          }
+          continue;
+        }
+        validRows.push(nums);
+      }
+
+      const rowCount = validRows.length;
+      if (rowCount === 0) {
         reject(
           new Error(
-            "列数不匹配: 首行 " + (first ? first.length : 0) + " 个值，期望 " + expected + "。"
+            "没有完整数据行（期望每行 " +
+              expected +
+              " 列" +
+              (firstBad
+                ? "；首个问题行 #" + firstBad.line + " 为 " + firstBad.cols + " 列"
+                : "") +
+              "）"
           )
         );
         return;
       }
+
       const nCols = expected;
       const columns = [];
       for (let c = 0; c < nCols; c++) columns.push(new Float32Array(rowCount));
@@ -174,12 +297,7 @@
         try {
           const end = Math.min(r + chunk, rowCount);
           for (; r < end; r++) {
-            const nums = r === 0 ? first : parseLineNumbers(nonempty[r]);
-            if (!nums || nums.length !== expected) {
-              throw new Error(
-                "第 " + (r + 1) + " 行列数错误: " + (nums ? nums.length : 0) + " != " + expected
-              );
-            }
+            const nums = validRows[r];
             for (let c = 0; c < nCols; c++) columns[c][r] = nums[c];
           }
           if (onProgress) onProgress(rowCount ? r / rowCount : 1);
@@ -199,6 +317,8 @@
               seriesKeys: seriesKeys,
               keyToCol: keyToCol,
               rowCount: rowCount,
+              skippedRows: skipped,
+              firstBadLine: firstBad,
             });
           }
         } catch (e) {
@@ -283,18 +403,64 @@
   var parsed = null;
   var selected = new Set();
   var fileName = "chart";
+  var loadedColumns = null;
   var cat = { meta: true, control: true, state: true, mechanics: true, gripper: true };
+
+  function applyStructureToForm(s) {
+    if (!s) return;
+    if (s.JointSize) $("joints").value = s.JointSize.join(", ");
+    if (s.GripperJointSize) {
+      $("grips").value = s.GripperJointSize.length ? s.GripperJointSize.join(", ") : "";
+    } else if (s.GripperSize === 0) {
+      $("grips").value = "";
+    }
+    if (s.sample_time !== undefined && s.sample_time !== null) {
+      $("sampleT").value = String(s.sample_time);
+    }
+  }
 
   function loadStructureForm() {
     try {
       const j = localStorage.getItem(LS_S);
       if (!j) return;
-      const s = JSON.parse(j);
-      if (s.JointSize) $("joints").value = s.JointSize.join(", ");
-      if (s.GripperJointSize) $("grips").value = s.GripperJointSize.join(", ");
-      $("sampleT").value =
-        s.sample_time !== undefined && s.sample_time !== null ? String(s.sample_time) : "";
+      applyStructureToForm(JSON.parse(j));
     } catch (_) {}
+  }
+
+  /** 接受 robot_structure / log_*.structure.json（可含 columns） */
+  function normalizeStructureJson(j) {
+    const s = {};
+    if (Array.isArray(j.JointSize) && j.JointSize.length) {
+      s.JointSize = j.JointSize.map(Number);
+      s.ArmSize = j.ArmSize != null ? Number(j.ArmSize) : s.JointSize.length;
+    } else if (j.ArmSize != null && Array.isArray(j.arm_joint_size)) {
+      s.ArmSize = Number(j.ArmSize);
+      s.JointSize = j.arm_joint_size.map(Number);
+    } else {
+      throw new Error("结构 JSON 缺少 JointSize");
+    }
+    if (Array.isArray(j.GripperJointSize)) {
+      s.GripperJointSize = j.GripperJointSize.map(Number).filter(function (n) {
+        return n > 0;
+      });
+      s.GripperSize = j.GripperSize != null ? Number(j.GripperSize) : s.GripperJointSize.length;
+    } else if (Array.isArray(j.gripper_joint_size)) {
+      s.GripperJointSize = j.gripper_joint_size.map(Number).filter(function (n) {
+        return n > 0;
+      });
+      s.GripperSize =
+        j.GripperSize != null ? Number(j.GripperSize) : s.GripperJointSize.length;
+    } else {
+      s.GripperJointSize = [];
+      s.GripperSize = 0;
+    }
+    if (j.sample_time !== undefined && j.sample_time !== null && Number.isFinite(Number(j.sample_time))) {
+      s.sample_time = Number(j.sample_time);
+    }
+    if (Array.isArray(j.columns) && j.columns.length) {
+      s.columns = j.columns.map(String);
+    }
+    return s;
   }
 
   function saveStructureForm(s) {
@@ -546,18 +712,21 @@
     var s;
     try {
       s = readStructureFromForm();
+      if (loadedColumns && loadedColumns.length) s.columns = loadedColumns;
       saveStructureForm(s);
     } catch (e) {
       setErr(e.message);
       return;
     }
+    const nExpect = expectedColumnCount(s);
     $("colInfo").textContent =
       "期望每行 " +
-      expectedColumnCount(s) +
+      nExpect +
       " 列 · ArmSize=" +
       s.ArmSize +
       " · GripperSize=" +
-      s.GripperSize;
+      s.GripperSize +
+      (s.columns ? " · schema=sidecar" : " · schema=log_schema");
     setProgress(0.01);
     parseLogText(rawText, s, function (f) {
       setProgress(f);
@@ -566,7 +735,16 @@
         parsed = p;
         setProgress(1);
         $("stats").textContent =
-          p.rowCount.toLocaleString() + " 行 · " + p.seriesKeys.length + " 列";
+          p.rowCount.toLocaleString() +
+          " 行 · " +
+          p.seriesKeys.length +
+          " 列" +
+          (p.skippedRows
+            ? " · 跳过 " +
+              p.skippedRows +
+              " 行不完整" +
+              (p.firstBadLine ? "（如 #" + p.firstBadLine.line + "）" : "")
+            : "");
         syncSelectionToParsed();
         renderTree();
         redrawPlot();
@@ -626,10 +804,12 @@
     r.onload = function () {
       try {
         const j = JSON.parse(String(r.result));
-        if (j.JointSize) $("joints").value = j.JointSize.join(", ");
-        if (j.GripperJointSize) $("grips").value = j.GripperJointSize.join(", ");
-        $("sampleT").value =
-          j.sample_time !== undefined && j.sample_time !== null ? String(j.sample_time) : "";
+        const root = j.structure && typeof j.structure === "object" ? j.structure : j;
+        const s = normalizeStructureJson(root);
+        applyStructureToForm(s);
+        loadedColumns = s.columns || null;
+        saveStructureForm(s);
+        setErr(null);
       } catch (e) {
         setErr("JSON: " + e.message);
       }
@@ -723,19 +903,39 @@
     new ResizeObserver(resizePlot).observe(plotWrap);
   }
 
+  function refreshColInfo() {
+    try {
+      const s = readStructureFromForm();
+      if (loadedColumns && loadedColumns.length) s.columns = loadedColumns;
+      $("colInfo").textContent =
+        "期望每行 " +
+        expectedColumnCount(s) +
+        " 列 · ArmSize=" +
+        s.ArmSize +
+        " · GripperSize=" +
+        s.GripperSize;
+    } catch (_) {
+      $("colInfo").textContent = "";
+    }
+  }
+
   buildChips();
   loadStructureForm();
   loadSelectedKeys();
-  try {
-    const s = readStructureFromForm();
-    $("colInfo").textContent =
-      "期望每行 " +
-      expectedColumnCount(s) +
-      " 列 · ArmSize=" +
-      s.ArmSize +
-      " · GripperSize=" +
-      s.GripperSize;
-  } catch (_) {
-    $("colInfo").textContent = "";
-  }
+  refreshColInfo();
+
+  fetch("log_schema.json")
+    .then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(function (j) {
+      if (j && Array.isArray(j.meta) && Array.isArray(j.per_arm)) {
+        logSchema = j;
+        refreshColInfo();
+      }
+    })
+    .catch(function () {
+      /* 使用内置 FALLBACK_SCHEMA */
+    });
 })();

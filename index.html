@@ -17,7 +17,7 @@
         <button type="button" class="btn" id="btnCfg">导出配置</button>
       </div>
     </div>
-    <p class="hint">本地浏览：<code>python3 -m http.server 8765</code> → <code>http://127.0.0.1:8765</code></p>
+    <p class="hint">本地浏览：<code>python3 -m http.server 8765</code> → <code>http://127.0.0.1:8765</code> · 字段见 <code>log_schema.json</code>；有 sidecar 时请一并加载 <code>log_*.structure.json</code></p>
   </header>
 
   <div class="grid">
@@ -25,7 +25,7 @@
       <section class="side-structure">
         <h2>机器人结构</h2>
         <label>每臂关节数（逗号分隔）<input id="joints" type="text" value="6" /></label>
-        <label>夹爪关节数（逗号，可空）<input id="grips" type="text" value="2" /></label>
+        <label>夹爪关节数（逗号，可空）<input id="grips" type="text" value="" /></label>
         <label>sample_time（秒，空=行号）<input id="sampleT" type="text" value="0.001" /></label>
         <button type="button" class="btn primary" id="btnApply">应用结构并重新解析</button>
         <p id="colInfo" class="muted"></p>
