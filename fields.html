@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN" class="docs-page">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CUArm 日志字段说明</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="docs">
+  <header class="top">
+    <div class="top-row">
+      <h1 class="title">CUArm 日志字段说明</h1>
+      <div class="row">
+        <a class="btn" href="index.html">返回可视化</a>
+      </div>
+    </div>
+  </header>
+  <div class="docs-wrap">
+    <p>日志列布局以 <code>cuarm_rt_control/app/log_utils.ipp</code> 的 <code>writeToLogFile</code> 为准。网页请打开本页，不要直接打开 <code>README.md</code>（<code>http.server</code> 按纯文本发送且不带 UTF-8，中文会乱码）。</p>
+
+    <h2>时间轴</h2>
+    <p>默认用 <code>Meta.running_cost</code>（控制周期耗时，单位 <strong>微秒</strong>）做累积：</p>
+    <ul>
+      <li><code>t[0] = 0</code></li>
+      <li><code>t[r] = t[r-1] + running_cost[r-1] × 10⁻⁶</code>（秒）</li>
+    </ul>
+    <p>周期抖动、过载拖长都会反映在横轴上。没有有效 <code>running_cost</code> 时，才退回左侧填写的 <code>sample_time</code>；再没有则用行号。</p>
+
+    <h2>单位</h2>
+    <p>非力矩模式时，角度相关量写成 <strong>度</strong>；力矩模式保持原单位。<code>*_cost</code> 为微秒。<code>tool_pose</code> 的 xyz 是米、姿态是四元数。笛卡尔 <code>rx/ry/rz</code> 为旋转向量（非力矩时转成度）。</p>
+
+    <h2>Meta（整机）</h2>
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>running_cost</code></td><td>整圈控制周期墙钟时间（含 sleep），微秒；也用于时间轴</td></tr>
+        <tr><td><code>robotics_total_cost</code></td><td>规划 / 运动学这一段耗时</td></tr>
+        <tr><td><code>hardware_communication_cost</code></td><td>从周期开始到硬件读写结束</td></tr>
+        <tr><td><code>communication_cost</code></td><td>到发完状态、入日志队列为止（sleep 前）</td></tr>
+        <tr><td><code>motor_communication_cost</code></td><td>电机总线读写耗时</td></tr>
+        <tr><td><code>gripper_communication_cost</code></td><td>夹爪通信耗时</td></tr>
+        <tr><td><code>button_communication_cost</code></td><td>按钮通信耗时</td></tr>
+        <tr><td><code>actuator_mode</code></td><td>下发给驱动器的模式：<code>0</code> 位置 / <code>1</code> 速度 / <code>2</code> 力矩</td></tr>
+        <tr><td><code>control_strategy</code></td><td>规划策略：<code>0</code> 关节 / <code>1</code> 笛卡尔 / <code>2</code> 直线 / <code>3</code> 零空间 / <code>4</code> 重力补偿 / <code>5</code> 示教 / <code>6</code> 回放</td></tr>
+        <tr><td><code>branch_state</code></td><td>本周期主循环分支（故障、恢复、新指令、无客户端等）</td></tr>
+        <tr><td><code>system_state</code></td><td><code>1</code> 启动 / <code>2</code> 空闲 / <code>3</code> 运动 / <code>4</code> 到位收敛 / <code>5</code> 错误 / <code>6</code> 恢复 / <code>7</code> 关机 / <code>8</code> 离线</td></tr>
+        <tr><td><code>plan_result</code></td><td><code>0</code> 成功 / <code>1</code> 位姿不可达 / <code>2</code> 直线路径失败</td></tr>
+        <tr><td><code>system_diagnostic_flags</code></td><td>系统诊断位掩码（限位、饱和、跟踪失败、碰撞等）</td></tr>
+        <tr><td><code>button_state</code></td><td>物理按钮状态</td></tr>
+        <tr><td><code>simulation</code></td><td><code>1</code> 不把命令真正发给硬件</td></tr>
+        <tr><td><code>target_type</code></td><td>上层目标类型：位置 / 速度 / 力矩（决定 PID 怎么算）</td></tr>
+      </tbody>
+    </table>
+
+    <h2>每关节：指令链路</h2>
+    <pre>用户目标
+  → target_before_interpolation   插值前的关节目标
+  → sliced_tar                    插值后、本周期要跟的目标
+  → pid_cmd                       按「目标类型 × 执行器模式」算出的命令
+  → guard_pos_cmd                 关节限位保护后
+  → sat_cmd                       软限位饱和后
+  → jump_cmd                      限制单步跳变后
+  → motor_target                  最终下发给电机的命令</pre>
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>motor_target</code></td><td>本周期发给硬件的最终命令</td></tr>
+        <tr><td><code>joint_position / velocity / acceleration</code></td><td>规划器侧关节状态（<code>srv_state</code>）</td></tr>
+        <tr><td><code>joint_torque</code></td><td>规划器侧关节力矩</td></tr>
+        <tr><td><code>motor_position / velocity / torque</code></td><td>硬件读回来的关节量（<code>robot_state</code>）</td></tr>
+        <tr><td><code>pid_cmd</code></td><td>位置跟位置直接透传；位置跟速度是 <code>Kp*(tar-x)</code>；力矩环再加阻尼等</td></tr>
+        <tr><td><code>guard_pos_cmd</code></td><td>速度/力矩模式下，防止下一拍冲出位置限位</td></tr>
+        <tr><td><code>sat_cmd</code></td><td>按软限位把命令夹到合法范围</td></tr>
+        <tr><td><code>jump_cmd</code></td><td>限制相邻周期命令跳变</td></tr>
+        <tr><td><code>joint_gravity</code></td><td>逆动力学算出的重力矩</td></tr>
+        <tr><td><code>friction</code></td><td>摩擦补偿（库仑 + 粘滞，用滤波速度）</td></tr>
+        <tr><td><code>gravity_kd_effect</code></td><td>重力环阻尼项（当前代码里常为 0）</td></tr>
+        <tr><td><code>filtered_joint_vel</code></td><td>低通 + 死区后的关节速度，给摩擦模型用</td></tr>
+        <tr><td><code>arm_diagnostic_flags</code></td><td>该关节诊断位（硬限位、跟踪失败等）</td></tr>
+      </tbody>
+    </table>
+    <p>对比跟踪：<code>sliced_tar</code> vs <code>joint_position</code>。对比下发是否被削：<code>pid_cmd</code> → <code>sat_cmd</code> → <code>jump_cmd</code> → <code>motor_target</code>。</p>
+
+    <h2>末端 / 任务空间（每臂固定列）</h2>
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>tool_pose_{x,y,z,qw,qx,qy,qz}</code></td><td>工具位姿：米 + 四元数</td></tr>
+        <tr><td><code>task_target_before_interpolation_*</code></td><td>笛卡尔目标，插值前</td></tr>
+        <tr><td><code>task_sliced_tar_*</code></td><td>笛卡尔插值后的本周期目标</td></tr>
+        <tr><td><code>task_pose_*</code></td><td>当前任务空间位姿（旋转向量）</td></tr>
+      </tbody>
+    </table>
+    <p>关节空间看 <code>sliced_tar</code>，笛卡尔/直线看 <code>task_sliced_tar</code>。</p>
+
+    <h2>夹爪（有夹爪才写）</h2>
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>gripper_target</code></td><td>夹爪目标</td></tr>
+        <tr><td><code>gripper_position</code></td><td>夹爪实际位置</td></tr>
+        <tr><td><code>gripper_diagnostic_flags</code></td><td>夹爪诊断位</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <script>
+    if (window.self !== window.top) document.documentElement.classList.add("embedded");
+  </script>
+</body>
+</html>

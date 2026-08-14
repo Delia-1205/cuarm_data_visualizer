@@ -15,9 +15,10 @@
         <label class="btn"><input id="jsonFile" type="file" accept=".json" hidden /> 结构 JSON</label>
         <button type="button" class="btn" id="btnPng">导出 PNG</button>
         <button type="button" class="btn" id="btnCfg">导出配置</button>
+        <button type="button" class="btn" id="btnHelp">字段说明</button>
       </div>
     </div>
-    <p class="hint">本地浏览：<code>python3 -m http.server 8765</code> → <code>http://127.0.0.1:8765</code> · 字段见 <code>log_schema.json</code>；有 sidecar 时请一并加载 <code>log_*.structure.json</code></p>
+    <p class="hint">本地浏览：<code>python3 -m http.server 8765</code> → <code>http://127.0.0.1:8765</code></p>
   </header>
 
   <div class="grid">
@@ -26,7 +27,7 @@
         <h2>机器人结构</h2>
         <label>每臂关节数（逗号分隔）<input id="joints" type="text" value="6" /></label>
         <label>夹爪关节数（逗号，可空）<input id="grips" type="text" value="" /></label>
-        <label>sample_time（秒，空=行号）<input id="sampleT" type="text" value="0.001" /></label>
+        <label>备用 sample_time（秒；有 running_cost 时按实际周期累积）<input id="sampleT" type="text" value="0.001" /></label>
         <button type="button" class="btn primary" id="btnApply">应用结构并重新解析</button>
         <p id="colInfo" class="muted"></p>
       </section>
@@ -54,6 +55,17 @@
         <div id="plot"></div>
       </div>
     </main>
+  </div>
+
+  <div id="helpModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-help></div>
+    <div class="modal-panel" role="dialog" aria-labelledby="helpTitle">
+      <div class="modal-bar">
+        <h2 id="helpTitle" class="title">日志字段说明</h2>
+        <button type="button" class="btn" data-close-help>关闭</button>
+      </div>
+      <iframe id="helpFrame" class="modal-frame" title="字段说明"></iframe>
+    </div>
   </div>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>

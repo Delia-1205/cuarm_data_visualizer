@@ -162,6 +162,7 @@ code {
   color: var(--text);
   cursor: pointer;
   font-size: 0.8rem;
+  text-decoration: none;
 }
 
 .btn:hover {
@@ -295,4 +296,134 @@ code {
   inset: 0;
   width: 100%;
   height: 100%;
+}
+
+html.docs-page,
+html.docs-page body.docs {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+}
+
+body.docs {
+  display: block;
+}
+
+.docs-wrap {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 16px 20px 48px;
+  line-height: 1.55;
+}
+
+.docs-wrap h1 {
+  font-size: 1.35rem;
+  margin: 0 0 12px;
+}
+
+.docs-wrap h2 {
+  font-size: 1.05rem;
+  margin: 28px 0 10px;
+  color: var(--accent);
+}
+
+.docs-wrap h3 {
+  font-size: 0.95rem;
+  margin: 20px 0 8px;
+}
+
+.docs-wrap p,
+.docs-wrap li {
+  color: var(--text);
+}
+
+.docs-wrap ul,
+.docs-wrap ol {
+  padding-left: 1.3em;
+}
+
+.docs-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  margin: 8px 0 16px;
+}
+
+.docs-wrap th,
+.docs-wrap td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.docs-wrap th {
+  background: var(--panel);
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.docs-wrap pre {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 0.82rem;
+}
+
+.docs-wrap a {
+  color: var(--accent);
+}
+
+html.embedded .top {
+  display: none;
+}
+
+html.embedded .docs-wrap {
+  padding-top: 8px;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 8, 12, 0.62);
+}
+
+.modal-panel {
+  position: absolute;
+  inset: 24px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.modal-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.modal-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: var(--bg);
 }

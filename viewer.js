@@ -227,6 +227,44 @@
     return buildSeriesColumnsFromSchema(s, logSchema);
   }
 
+  /** running_cost 为微秒；t[0]=0，之后按上一拍周期累加。无有效列时退回 sample_time / 行号。 */
+  function buildTimeAxis(seriesMeta, columns, rowCount, sampleT) {
+    const time = new Float32Array(rowCount);
+    let costIdx = -1;
+    for (let i = 0; i < seriesMeta.length; i++) {
+      if (seriesMeta[i].key === "Meta.running_cost") {
+        costIdx = i;
+        break;
+      }
+    }
+    if (costIdx >= 0 && columns[costIdx]) {
+      const cost = columns[costIdx];
+      let usable = 0;
+      for (let r = 0; r < rowCount; r++) {
+        if (cost[r] > 0 && Number.isFinite(cost[r])) usable++;
+      }
+      if (usable > 0) {
+        let acc = 0;
+        time[0] = 0;
+        for (let r = 1; r < rowCount; r++) {
+          const dtUs = cost[r - 1] > 0 && Number.isFinite(cost[r - 1]) ? cost[r - 1] : 0;
+          acc += dtUs * 1e-6;
+          time[r] = acc;
+        }
+        return { time: time, timeSource: "running_cost", durationS: acc };
+      }
+    }
+    for (let r = 0; r < rowCount; r++) {
+      time[r] = sampleT > 0 ? r * sampleT : r;
+    }
+    const last = rowCount ? time[rowCount - 1] : 0;
+    return {
+      time: time,
+      timeSource: sampleT > 0 ? "sample_time" : "index",
+      durationS: last,
+    };
+  }
+
   function parseLineNumbers(line) {
     const t = line.trim();
     if (!t) return null;
@@ -284,11 +322,6 @@
       const nCols = expected;
       const columns = [];
       for (let c = 0; c < nCols; c++) columns.push(new Float32Array(rowCount));
-      const sampleT = structure.sample_time || 0;
-      const time = new Float32Array(rowCount);
-      for (let r = 0; r < rowCount; r++) {
-        time[r] = sampleT > 0 ? r * sampleT : r;
-      }
 
       let r = 0;
       const chunk = 2000;
@@ -309,9 +342,12 @@
             });
             const keyToCol = new Map();
             for (let i = 0; i < seriesKeys.length; i++) keyToCol.set(seriesKeys[i], i);
+            const axis = buildTimeAxis(seriesMeta, columns, rowCount, structure.sample_time || 0);
             resolve({
               structure: structure,
-              time: time,
+              time: axis.time,
+              timeSource: axis.timeSource,
+              durationS: axis.durationS,
               columns: columns,
               seriesMeta: seriesMeta,
               seriesKeys: seriesKeys,
@@ -678,14 +714,19 @@
         hovertemplate: "%{fullData.name}<br>t=%{x:.6~f}<br>y=%{y:.6~f}<extra></extra>",
       });
     }
-    const sampleT = parsed.structure.sample_time || 0;
+    const timeLabel =
+      parsed.timeSource === "running_cost"
+        ? "t (s) · running_cost 累积"
+        : parsed.timeSource === "sample_time"
+          ? "t (s) · sample_time"
+          : "sample index";
     const layout = {
       autosize: true,
       paper_bgcolor: "#16161e",
       plot_bgcolor: "#1a1b26",
       font: { color: "#a9b1d6", size: 12 },
       xaxis: {
-        title: { text: sampleT > 0 ? "t (s)" : "sample index" },
+        title: { text: timeLabel },
         gridcolor: "#2b3040",
       },
       yaxis: { title: { text: "value" }, gridcolor: "#2b3040" },
@@ -734,11 +775,22 @@
       .then(function (p) {
         parsed = p;
         setProgress(1);
+        var timeNote = "";
+        if (p.timeSource === "running_cost") {
+          timeNote =
+            " · 时间轴 running_cost 累积 " +
+            (p.durationS != null ? p.durationS.toFixed(3) + " s" : "");
+        } else if (p.timeSource === "sample_time") {
+          timeNote = " · 时间轴 sample_time（无有效 running_cost）";
+        } else {
+          timeNote = " · 时间轴为行号";
+        }
         $("stats").textContent =
           p.rowCount.toLocaleString() +
           " 行 · " +
           p.seriesKeys.length +
           " 列" +
+          timeNote +
           (p.skippedRows
             ? " · 跳过 " +
               p.skippedRows +
@@ -820,6 +872,25 @@
 
   $("btnApply").addEventListener("click", function () {
     parseNow();
+  });
+
+  function openHelp() {
+    const modal = $("helpModal");
+    const frame = $("helpFrame");
+    if (!frame.getAttribute("src")) frame.setAttribute("src", "fields.html");
+    modal.hidden = false;
+  }
+
+  function closeHelp() {
+    $("helpModal").hidden = true;
+  }
+
+  $("btnHelp").addEventListener("click", openHelp);
+  $("helpModal").addEventListener("click", function (ev) {
+    if (ev.target && ev.target.hasAttribute("data-close-help")) closeHelp();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !$("helpModal").hidden) closeHelp();
   });
 
   $("search").addEventListener("input", function () {
