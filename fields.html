@@ -22,7 +22,7 @@
       <li><code>t[0] = 0</code></li>
       <li><code>t[r] = t[r-1] + running_cost[r-1] × 10⁻⁶</code>（秒）</li>
     </ul>
-    <p>周期抖动、过载拖长都会反映在横轴上。没有有效 <code>running_cost</code> 时，才退回左侧填写的 <code>sample_time</code>；再没有则用行号。</p>
+    <p>周期抖动、过载拖长都会反映在横轴上。在左侧填写 <code>sample_time</code> 并点击「应用结构并重新解析」后，改为固定步长。清空后再点应用，或重新打开 TXT，回到 <code>running_cost</code>。没有有效 <code>running_cost</code> 且未指定采样时间时用行号。</p>
 
     <h2>单位</h2>
     <p>非力矩模式时，角度相关量写成 <strong>度</strong>；力矩模式保持原单位。<code>*_cost</code> 为微秒。<code>tool_pose</code> 的 xyz 是米、姿态是四元数。笛卡尔 <code>rx/ry/rz</code> 为旋转向量（非力矩时转成度）。</p>

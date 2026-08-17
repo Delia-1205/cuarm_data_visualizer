@@ -24,7 +24,7 @@ python3 -m http.server 8765
 - `t[0] = 0`
 - `t[r] = t[r-1] + running_cost[r-1] × 10⁻⁶`（秒）
 
-这样周期抖动、过载拖长都会反映在横轴上。没有有效 `running_cost` 时，才退回左侧填写的 `sample_time`（固定步长）；再没有则用行号。
+在左侧填写 `sample_time` 并点击「应用结构并重新解析」后，横轴改为固定步长 `t = i × sample_time`。清空 `sample_time` 再点应用，或重新打开 TXT，会回到 `running_cost`。没有有效 `running_cost` 且未指定采样时间时，横轴用行号。
 
 ## 字段从哪来？
 

@@ -27,7 +27,7 @@
         <h2>机器人结构</h2>
         <label>每臂关节数（逗号分隔）<input id="joints" type="text" value="6" /></label>
         <label>夹爪关节数（逗号，可空）<input id="grips" type="text" value="" /></label>
-        <label>备用 sample_time（秒；有 running_cost 时按实际周期累积）<input id="sampleT" type="text" value="0.001" /></label>
+        <label>sample_time（秒；填写后点应用才用作横轴，空则用 running_cost）<input id="sampleT" type="text" value="" /></label>
         <button type="button" class="btn primary" id="btnApply">应用结构并重新解析</button>
         <p id="colInfo" class="muted"></p>
       </section>

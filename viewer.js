@@ -227,9 +227,24 @@
     return buildSeriesColumnsFromSchema(s, logSchema);
   }
 
-  /** running_cost 为微秒；t[0]=0，之后按上一拍周期累加。无有效列时退回 sample_time / 行号。 */
-  function buildTimeAxis(seriesMeta, columns, rowCount, sampleT) {
+  function fillUniformTime(time, rowCount, sampleT) {
+    for (let r = 0; r < rowCount; r++) {
+      time[r] = sampleT > 0 ? r * sampleT : r;
+    }
+    const last = rowCount ? time[rowCount - 1] : 0;
+    return {
+      time: time,
+      timeSource: sampleT > 0 ? "sample_time" : "index",
+      durationS: last,
+    };
+  }
+
+  /** 默认用 running_cost（微秒）累积；仅当用户点「应用」且填写了 sample_time 时用固定步长。 */
+  function buildTimeAxis(seriesMeta, columns, rowCount, sampleT, preferSampleTime) {
     const time = new Float32Array(rowCount);
+    if (preferSampleTime && sampleT > 0) {
+      return fillUniformTime(time, rowCount, sampleT);
+    }
     let costIdx = -1;
     for (let i = 0; i < seriesMeta.length; i++) {
       if (seriesMeta[i].key === "Meta.running_cost") {
@@ -254,15 +269,7 @@
         return { time: time, timeSource: "running_cost", durationS: acc };
       }
     }
-    for (let r = 0; r < rowCount; r++) {
-      time[r] = sampleT > 0 ? r * sampleT : r;
-    }
-    const last = rowCount ? time[rowCount - 1] : 0;
-    return {
-      time: time,
-      timeSource: sampleT > 0 ? "sample_time" : "index",
-      durationS: last,
-    };
+    return fillUniformTime(time, rowCount, sampleT);
   }
 
   function parseLineNumbers(line) {
@@ -342,7 +349,13 @@
             });
             const keyToCol = new Map();
             for (let i = 0; i < seriesKeys.length; i++) keyToCol.set(seriesKeys[i], i);
-            const axis = buildTimeAxis(seriesMeta, columns, rowCount, structure.sample_time || 0);
+            const axis = buildTimeAxis(
+              seriesMeta,
+              columns,
+              rowCount,
+              structure.sample_time || 0,
+              !!structure.use_sample_time_axis
+            );
             resolve({
               structure: structure,
               time: axis.time,
@@ -440,6 +453,7 @@
   var selected = new Set();
   var fileName = "chart";
   var loadedColumns = null;
+  var useSampleTimeAxis = false;
   var cat = { meta: true, control: true, state: true, mechanics: true, gripper: true };
 
   function applyStructureToForm(s) {
@@ -716,7 +730,7 @@
     }
     const timeLabel =
       parsed.timeSource === "running_cost"
-        ? "t (s) · running_cost 累积"
+        ? "t (s) · running_cost cumulative"
         : parsed.timeSource === "sample_time"
           ? "t (s) · sample_time"
           : "sample index";
@@ -754,6 +768,7 @@
     try {
       s = readStructureFromForm();
       if (loadedColumns && loadedColumns.length) s.columns = loadedColumns;
+      s.use_sample_time_axis = useSampleTimeAxis;
       saveStructureForm(s);
     } catch (e) {
       setErr(e.message);
@@ -778,10 +793,10 @@
         var timeNote = "";
         if (p.timeSource === "running_cost") {
           timeNote =
-            " · 时间轴 running_cost 累积 " +
+            " · 时间轴 running_cost cumulative " +
             (p.durationS != null ? p.durationS.toFixed(3) + " s" : "");
         } else if (p.timeSource === "sample_time") {
-          timeNote = " · 时间轴 sample_time（无有效 running_cost）";
+          timeNote = " · 时间轴 sample_time";
         } else {
           timeNote = " · 时间轴为行号";
         }
@@ -844,6 +859,7 @@
     const r = new FileReader();
     r.onload = function () {
       rawText = String(r.result);
+      useSampleTimeAxis = false;
       parseNow();
     };
     r.readAsText(f);
@@ -871,6 +887,8 @@
   });
 
   $("btnApply").addEventListener("click", function () {
+    const st = Number($("sampleT").value.trim());
+    useSampleTimeAxis = Number.isFinite(st) && st > 0;
     parseNow();
   });
 
