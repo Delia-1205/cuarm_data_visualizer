@@ -288,13 +288,17 @@
   function parseLogText(text, structure, onProgress) {
     return new Promise(function (resolve, reject) {
       const lines = text.split("\n");
+      let dataStart = 0;
+      if (lines.length > 0 && /^\s*#/.test(lines[0])) {
+        dataStart = 1;
+      }
       const seriesMeta = buildSeriesColumns(structure);
       const expected = expectedColumnCount(structure);
       const validRows = [];
       let skipped = 0;
       let firstBad = null;
 
-      for (let i = 0; i < lines.length; i++) {
+      for (let i = dataStart; i < lines.length; i++) {
         if (!lines[i].trim()) continue;
         const nums = parseLineNumbers(lines[i]);
         if (!nums || nums.length !== expected) {

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "source": "cuarm_rt_control/app/log_utils.ipp::writeToLogFile",
-  "note": "改 writeToLogFile 后同步改本文件；运行时也会写 log_*.structure.json",
+  "source": "cuarm_rt_control/rt_control/telemetry/telemetry_sink.cpp::formatTextLine",
+  "note": "改 telemetry_sink.cpp 后同步改本文件；运行时也会写 log_*.structure.json",
   "meta": [
     "running_cost",
     "robotics_total_cost",
@@ -10,6 +10,8 @@
     "motor_communication_cost",
     "gripper_communication_cost",
     "button_communication_cost",
+    "srv_state_seq_id",
+    "client_seq_id",
     "actuator_mode",
     "control_strategy",
     "branch_state",
@@ -39,31 +41,34 @@
       "name": "tool_pose",
       "labels": ["x", "y", "z", "qw", "qx", "qy", "qz"]
     },
-    { "kind": "per_joint", "field": "target_before_interpolation" },
-    { "kind": "per_joint", "field": "sliced_tar" },
-    { "kind": "per_joint", "field": "pid_cmd" },
-    { "kind": "per_joint", "field": "guard_pos_cmd" },
-    { "kind": "per_joint", "field": "sat_cmd" },
-    { "kind": "per_joint", "field": "jump_cmd" },
     {
-      "kind": "fixed",
-      "name": "task_target_before_interpolation",
-      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+      "kind": "per_joint_interleaved",
+      "fields": [
+        "target_before_interpolation",
+        "sliced_tar",
+        "pid_cmd",
+        "guard_pos_cmd",
+        "sat_cmd",
+        "jump_cmd"
+      ]
     },
     {
-      "kind": "fixed",
-      "name": "task_sliced_tar",
-      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+      "kind": "per_joint_interleaved",
+      "fields": [
+        "task_target_before_interpolation",
+        "task_sliced_tar",
+        "task_pose"
+      ]
     },
     {
-      "kind": "fixed",
-      "name": "task_pose",
-      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+      "kind": "per_joint_interleaved",
+      "fields": [
+        "joint_gravity",
+        "friction",
+        "gravity_kd_effect",
+        "filtered_joint_vel"
+      ]
     },
-    { "kind": "per_joint", "field": "joint_gravity" },
-    { "kind": "per_joint", "field": "friction" },
-    { "kind": "per_joint", "field": "gravity_kd_effect" },
-    { "kind": "per_joint", "field": "filtered_joint_vel" },
     { "kind": "per_joint", "field": "arm_diagnostic_flags" }
   ],
   "per_gripper": [
