@@ -382,6 +382,50 @@
     });
   }
 
+  function parseLogBinary(buffer, structure, onProgress) {
+    return TelemetryBinary.parseBinaryTable(buffer, onProgress).then(function (bin) {
+      var seriesMeta = buildSeriesColumnsFromNames(bin.viewerColumnNames, logSchema);
+      var expected = bin.nCols;
+      if (seriesMeta.length !== expected) {
+        throw new Error("列名映射异常：期望 " + expected + " 列，得到 " + seriesMeta.length);
+      }
+      var rowCount = bin.rowCount;
+      var nCols = expected;
+      var columns = [];
+      for (var c = 0; c < nCols; c++) columns.push(new Float32Array(rowCount));
+      for (var r = 0; r < rowCount; r++) {
+        var nums = bin.rows[r];
+        for (var c2 = 0; c2 < nCols; c2++) columns[c2][r] = nums[c2];
+      }
+      var seriesKeys = seriesMeta.map(function (m) {
+        return m.key;
+      });
+      var keyToCol = new Map();
+      for (var i = 0; i < seriesKeys.length; i++) keyToCol.set(seriesKeys[i], i);
+      var axis = buildTimeAxis(
+        seriesMeta,
+        columns,
+        rowCount,
+        structure.sample_time || 0,
+        !!structure.use_sample_time_axis
+      );
+      return {
+        structure: structure,
+        time: axis.time,
+        timeSource: axis.timeSource,
+        durationS: axis.durationS,
+        columns: columns,
+        seriesMeta: seriesMeta,
+        seriesKeys: seriesKeys,
+        keyToCol: keyToCol,
+        rowCount: rowCount,
+        skippedRows: 0,
+        firstBadLine: null,
+        binaryHeader: bin.header,
+      };
+    });
+  }
+
   function lttb(x, y, threshold) {
     const n = Math.min(x.length, y.length);
     if (threshold >= n || threshold <= 2) {
@@ -453,6 +497,7 @@
   }
 
   var rawText = null;
+  var rawBinary = null;
   var parsed = null;
   var selected = new Set();
   var fileName = "chart";
@@ -657,7 +702,7 @@
     const tree = $("tree");
     tree.innerHTML = "";
     if (!parsed) {
-      tree.textContent = "请先加载 TXT";
+      tree.textContent = "请先加载 TXT 或 BIN";
       $("selCount").textContent = "";
       return;
     }
@@ -766,7 +811,7 @@
   }
 
   function parseNow() {
-    if (!rawText) return;
+    if (!rawText && !rawBinary) return;
     setErr(null);
     var s;
     try {
@@ -786,11 +831,16 @@
       s.ArmSize +
       " · GripperSize=" +
       s.GripperSize +
-      (s.columns ? " · schema=sidecar" : " · schema=log_schema");
+      (rawBinary ? " · schema=CTLG binary" : s.columns ? " · schema=sidecar" : " · schema=log_schema");
     setProgress(0.01);
-    parseLogText(rawText, s, function (f) {
-      setProgress(f);
-    })
+    var parsePromise = rawBinary
+      ? parseLogBinary(rawBinary, s, function (f) {
+          setProgress(f);
+        })
+      : parseLogText(rawText, s, function (f) {
+          setProgress(f);
+        });
+    parsePromise
       .then(function (p) {
         parsed = p;
         setProgress(1);
@@ -804,11 +854,20 @@
         } else {
           timeNote = " · 时间轴为行号";
         }
+        var binNote = "";
+        if (p.binaryHeader) {
+          binNote =
+            " · CTLG v" +
+            p.binaryHeader.version +
+            " · record_size=" +
+            p.binaryHeader.record_size;
+        }
         $("stats").textContent =
           p.rowCount.toLocaleString() +
           " 行 · " +
           p.seriesKeys.length +
           " 列" +
+          binNote +
           timeNote +
           (p.skippedRows
             ? " · 跳过 " +
@@ -856,13 +915,38 @@
     }
   }
 
-  $("txtFile").addEventListener("change", function (ev) {
+  $("dataFile").addEventListener("change", function (ev) {
     const f = ev.target.files[0];
     if (!f) return;
     fileName = f.name.replace(/\.[^.]+$/, "") || "chart";
+    const isBin = /\.bin$/i.test(f.name);
+    if (isBin) {
+      const r = new FileReader();
+      r.onload = function () {
+        try {
+          rawBinary = r.result;
+          rawText = null;
+          useSampleTimeAxis = false;
+          const header = TelemetryBinary.readHeader(rawBinary);
+          const structure = TelemetryBinary.structureFromHeader(header);
+          const flatNames = TelemetryBinary.columnNamesV1(header);
+          loadedColumns = TelemetryBinary.flatNamesToViewerKeys(flatNames);
+          applyStructureToForm(structure);
+          saveStructureForm(structure);
+          setErr(null);
+          parseNow();
+        } catch (e) {
+          rawBinary = null;
+          setErr("BIN: " + e.message);
+        }
+      };
+      r.readAsArrayBuffer(f);
+      return;
+    }
     const r = new FileReader();
     r.onload = function () {
       rawText = String(r.result);
+      rawBinary = null;
       useSampleTimeAxis = false;
       parseNow();
     };
@@ -879,13 +963,13 @@
         const root = j.structure && typeof j.structure === "object" ? j.structure : j;
         const s = normalizeStructureJson(root);
         applyStructureToForm(s);
-        loadedColumns = s.columns || null;
+        if (!rawBinary) loadedColumns = s.columns || null;
         saveStructureForm(s);
         setErr(null);
       } catch (e) {
         setErr("JSON: " + e.message);
       }
-      if (rawText) parseNow();
+      if (rawBinary || rawText) parseNow();
     };
     r.readAsText(f);
   });
