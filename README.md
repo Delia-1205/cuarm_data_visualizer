@@ -11,11 +11,22 @@ python3 -m http.server 8765
 
 ## 推荐用法
 
-1. 打开 `log_YYYYMMDD_HHMMSS.txt`
+1. 打开 `log_YYYYMMDD_HHMMSS.txt` 或 `telemetry_YYYYMMDD_HHMMSS.bin`（CTLG 二进制遥测）
 2. 再打开同名的 `log_YYYYMMDD_HHMMSS.structure.json`（「结构 JSON」按钮）——列名与维度会自动对齐
-3. 若没有 sidecar：在左侧填关节/夹爪数（例如 `6` 关节、夹爪空 → **155** 列），靠 `log_schema.json` 解析
+3. 若没有 sidecar：TXT 在左侧填关节/夹爪数；**BIN 会从文件头自动读取 ArmSize / 关节数，无需 structure JSON**
+4. 若没有 sidecar 且为 TXT：在左侧填关节/夹爪数（例如 `6` 关节、夹爪空 → **155** 列），靠 `log_schema.json` 解析
 
-最后一行若被进程退出截断，会自动跳过，状态栏会提示跳过行数。
+最后一行若被进程退出截断，会自动跳过，状态栏会提示跳过行数（仅 TXT）。
+
+### 二进制 CTLG（`.bin`）
+
+与 `pyplotc/telemetry_helper.py` 使用同一套 **version=1** 布局：
+
+- 文件头 magic `CTLG`，含 `arm_size`、`arm_joint_size`、`gripper_size`、`record_size`
+- 列名由解析器按头信息展开，并映射为网页字段键（如 `Arm0.J1.motor_target`）
+- 无需 sidecar JSON；打开 `.bin` 后左侧结构表单会自动填充
+
+浏览器端默认使用 [telemetry_binary.js](telemetry_binary.js)。若已构建 [telemetry](../telemetry/) WASM，可将 `telemetry.js` / `telemetry.wasm` 复制到本目录，并通过 [telemetry_wasm_bridge.js](telemetry_wasm_bridge.js) 切换到与 C++ 核心一致的解析实现。
 
 ## 时间轴
 

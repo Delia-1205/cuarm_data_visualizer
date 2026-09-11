@@ -11,7 +11,7 @@
     <div class="top-row">
       <h1 class="title">CUArm 数据可视化</h1>
       <div class="row">
-        <label class="btn"><input id="txtFile" type="file" accept=".txt,text/plain" hidden /> 打开 TXT</label>
+        <label class="btn"><input id="dataFile" type="file" accept=".txt,.bin,text/plain,application/octet-stream" hidden /> 打开 TXT / BIN</label>
         <label class="btn"><input id="jsonFile" type="file" accept=".json" hidden /> 结构 JSON</label>
         <button type="button" class="btn" id="btnPng">导出 PNG</button>
         <button type="button" class="btn" id="btnCfg">导出配置</button>
@@ -69,6 +69,8 @@
   </div>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+  <script src="telemetry_binary.js"></script>
+  <script src="telemetry_wasm_bridge.js"></script>
   <script src="viewer.js"></script>
 </body>
 </html>
