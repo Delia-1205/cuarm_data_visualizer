@@ -109,6 +109,16 @@
   };
 
   var logSchema = FALLBACK_SCHEMA;
+  var rtControlSchema = null;
+  var activeSchemaId = "telemetry";
+
+  function getActiveSchema() {
+    return activeSchemaId === "rt_control" && rtControlSchema ? rtControlSchema : logSchema;
+  }
+
+  function setActiveSchema(id) {
+    activeSchemaId = id === "rt_control" && rtControlSchema ? "rt_control" : "telemetry";
+  }
 
   function categorySetsFromSchema(schema) {
     const cats = (schema && schema.categories) || {};
@@ -216,15 +226,66 @@
     return cols;
   }
 
-  function expectedColumnCount(s) {
-    return buildSeriesColumns(s).length;
+  function buildSeriesColumns(s, schema) {
+    const sch = schema || getActiveSchema();
+    if (s && Array.isArray(s.columns) && s.columns.length) {
+      return buildSeriesColumnsFromNames(s.columns, sch);
+    }
+    return buildSeriesColumnsFromSchema(s, sch);
   }
 
-  function buildSeriesColumns(s) {
-    if (s && Array.isArray(s.columns) && s.columns.length) {
-      return buildSeriesColumnsFromNames(s.columns, logSchema);
+  function expectedColumnCount(s, schema) {
+    return buildSeriesColumns(s, schema).length;
+  }
+
+  function sniffTxtColumnCount(text) {
+    const lines = text.split("\n");
+    let dataStart = lines.length > 0 && /^\s*#/.test(lines[0]) ? 1 : 0;
+    for (let i = dataStart; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      const n = countLineFields(lines[i]);
+      if (n > 0) return n;
     }
-    return buildSeriesColumnsFromSchema(s, logSchema);
+    return 0;
+  }
+
+  function inferRtControlStructure(colCount) {
+    if (!rtControlSchema) return null;
+    const known = [[7, 2, 7], [7, 7], [6, 6], [6], [7]];
+    for (let i = 0; i < known.length; i++) {
+      const js = known[i];
+      const s = {
+        ArmSize: js.length,
+        JointSize: js.slice(),
+        GripperSize: 0,
+        GripperJointSize: [],
+      };
+      if (expectedColumnCount(s, rtControlSchema) === colCount) return s;
+    }
+    return null;
+  }
+
+  function resolveTxtParsePlan(textOrColCount, formStructure) {
+    const colCount =
+      typeof textOrColCount === "number" ? textOrColCount : sniffTxtColumnCount(textOrColCount);
+    if (!colCount) return { schemaId: activeSchemaId, structure: formStructure };
+    if (expectedColumnCount(formStructure, logSchema) === colCount) {
+      return { schemaId: "telemetry", structure: formStructure };
+    }
+    if (rtControlSchema) {
+      if (expectedColumnCount(formStructure, rtControlSchema) === colCount) {
+        return { schemaId: "rt_control", structure: formStructure };
+      }
+      const inferred = inferRtControlStructure(colCount);
+      if (inferred) return { schemaId: "rt_control", structure: inferred };
+    }
+    return { schemaId: activeSchemaId, structure: formStructure };
+  }
+
+  function schemaLabel() {
+    if (rawBinary) return "CTLG binary";
+    if (loadedColumns && loadedColumns.length) return "sidecar";
+    return activeSchemaId === "rt_control" ? "rt_control" : "telemetry";
   }
 
   function fillUniformTime(time, rowCount, sampleT) {
@@ -272,114 +333,515 @@
     return fillUniformTime(time, rowCount, sampleT);
   }
 
-  function parseLineNumbers(line) {
-    const t = line.trim();
-    if (!t) return null;
-    const parts = t.split(/\s+/);
-    const out = [];
-    for (let i = 0; i < parts.length; i++) {
-      const v = Number(parts[i]);
-      if (!Number.isFinite(v)) return null;
-      out.push(v);
+  function countLineFields(line) {
+    let n = 0;
+    let i = 0;
+    const len = line.length;
+    while (i < len) {
+      while (i < len && (line.charCodeAt(i) === 32 || line.charCodeAt(i) === 9)) i++;
+      if (i >= len) break;
+      let j = i;
+      while (j < len && line.charCodeAt(j) !== 32 && line.charCodeAt(j) !== 9) j++;
+      n++;
+      i = j;
     }
-    return out;
+    return n;
   }
 
-  function parseLogText(text, structure, onProgress) {
-    return new Promise(function (resolve, reject) {
-      const lines = text.split("\n");
-      let dataStart = 0;
-      if (lines.length > 0 && /^\s*#/.test(lines[0])) {
-        dataStart = 1;
-      }
-      const seriesMeta = buildSeriesColumns(structure);
-      const expected = expectedColumnCount(structure);
-      const validRows = [];
-      let skipped = 0;
-      let firstBad = null;
+  function parseLineToColumns(line, expected, columns, row) {
+    let i = 0;
+    let col = 0;
+    const len = line.length;
+    while (i < len && col < expected) {
+      while (i < len && (line.charCodeAt(i) === 32 || line.charCodeAt(i) === 9)) i++;
+      if (i >= len) return false;
+      let j = i;
+      while (j < len && line.charCodeAt(j) !== 32 && line.charCodeAt(j) !== 9) j++;
+      const v = Number(line.slice(i, j));
+      if (!Number.isFinite(v)) return false;
+      columns[col][row] = v;
+      col++;
+      i = j;
+    }
+    return col === expected;
+  }
 
-      for (let i = dataStart; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
-        const nums = parseLineNumbers(lines[i]);
-        if (!nums || nums.length !== expected) {
-          skipped++;
-          if (!firstBad) {
-            firstBad = {
-              line: i + 1,
-              cols: nums ? nums.length : 0,
-            };
-          }
-          continue;
+  function finalizeLogParse(structure, seriesMeta, columns, rowCount, skipped, firstBad) {
+    const seriesKeys = seriesMeta.map(function (m) {
+      return m.key;
+    });
+    const keyToCol = new Map();
+    for (let i = 0; i < seriesKeys.length; i++) keyToCol.set(seriesKeys[i], i);
+    const axis = buildTimeAxis(
+      seriesMeta,
+      columns,
+      rowCount,
+      structure.sample_time || 0,
+      !!structure.use_sample_time_axis
+    );
+    return {
+      structure: structure,
+      time: axis.time,
+      timeSource: axis.timeSource,
+      durationS: axis.durationS,
+      columns: columns,
+      seriesMeta: seriesMeta,
+      seriesKeys: seriesKeys,
+      keyToCol: keyToCol,
+      rowCount: rowCount,
+      skippedRows: skipped,
+      firstBadLine: firstBad,
+    };
+  }
+
+  function allocateColumnBuffers(nCols, rowCount) {
+    const columns = new Array(nCols);
+    for (let c = 0; c < nCols; c++) columns[c] = new Float32Array(rowCount);
+    return columns;
+  }
+
+  function trimColumns(columns, rowCount) {
+    for (let c = 0; c < columns.length; c++) {
+      if (columns[c].length > rowCount) columns[c] = columns[c].subarray(0, rowCount);
+    }
+  }
+
+  function growColumns(columns, newCap) {
+    for (let c = 0; c < columns.length; c++) {
+      const old = columns[c];
+      if (old.length >= newCap) continue;
+      const neu = new Float32Array(newCap);
+      neu.set(old);
+      columns[c] = neu;
+    }
+  }
+
+  function readParseOptionsFromForm() {
+    const skip = Math.max(0, parseInt($("parseSkip").value, 10) || 0);
+    const maxRaw = parseInt($("parseMaxRows").value, 10);
+    const maxRows = Number.isFinite(maxRaw) && maxRaw > 0 ? maxRaw : 0;
+    const decimate = Math.max(1, parseInt($("parseDecimate").value, 10) || 1);
+    const autoDecimate = $("parseAutoDecimate").checked;
+    return { skipRows: skip, maxRows: maxRows, decimate: decimate, autoDecimate: autoDecimate };
+  }
+
+  function saveParseOptionsForm(opts) {
+    try {
+      localStorage.setItem(LS_P, JSON.stringify(opts));
+    } catch (_) {}
+  }
+
+  function loadParseOptionsForm() {
+    try {
+      const j = localStorage.getItem(LS_P);
+      if (!j) return;
+      const o = JSON.parse(j);
+      if (o.skipRows != null) $("parseSkip").value = String(o.skipRows);
+      if (o.maxRows != null && o.maxRows > 0) $("parseMaxRows").value = String(o.maxRows);
+      if (o.decimate != null) $("parseDecimate").value = String(o.decimate);
+      if (o.autoDecimate != null) $("parseAutoDecimate").checked = !!o.autoDecimate;
+    } catch (_) {}
+  }
+
+  function shouldUseSinglePass(parseOpts, estimatedRows) {
+    if (parseOpts.skipRows > 0) return true;
+    if (parseOpts.maxRows > 0) return true;
+    if (parseOpts.decimate > 1) return true;
+    if (parseOpts.autoDecimate && estimatedRows > DEFAULT_MAX_STORED_ROWS) return true;
+    return false;
+  }
+
+  function computeParsePlan(parseOpts, estimatedRows, fileSize) {
+    const skip = parseOpts.skipRows;
+    let decimate = parseOpts.decimate;
+    const hardCap = parseOpts.maxRows > 0 ? parseOpts.maxRows : DEFAULT_MAX_STORED_ROWS;
+    let autoApplied = false;
+
+    if (parseOpts.autoDecimate && decimate <= 1 && estimatedRows > hardCap) {
+      decimate = Math.max(1, Math.ceil(estimatedRows / hardCap));
+      autoApplied = true;
+    }
+
+    const afterSkip = Math.max(0, estimatedRows - skip);
+    let storeCount = Math.ceil(afterSkip / decimate);
+    if (parseOpts.maxRows > 0) storeCount = Math.min(storeCount, parseOpts.maxRows);
+
+    return {
+      skipRows: skip,
+      decimate: decimate,
+      maxRows: parseOpts.maxRows,
+      storeCount: Math.max(1, storeCount),
+      estimatedRows: estimatedRows,
+      autoDecimateApplied: autoApplied,
+      stopEarly: parseOpts.maxRows > 0,
+    };
+  }
+
+  function estimateValidRowsFromFile(file, expected) {
+    const sampleBytes = Math.min(file.size, 512 * 1024);
+    const blob = file.slice(0, sampleBytes);
+    let valid = 0;
+    let total = 0;
+    let firstLine = true;
+    return streamFileLines(blob, {
+      yieldEvery: 5000,
+      onLine: function (line) {
+        if (firstLine && /^\s*#/.test(line)) {
+          firstLine = false;
+          return;
         }
-        validRows.push(nums);
-      }
+        firstLine = false;
+        if (!line.trim()) return;
+        total++;
+        if (countLineFields(line) === expected) valid++;
+      },
+    }).then(function () {
+      if (!valid) return Math.max(1, Math.floor(file.size / (expected * 8 + 16)));
+      const validRatio = valid / Math.max(1, total);
+      const avgBytesPerLine = sampleBytes / Math.max(1, total);
+      return Math.max(valid, Math.round((file.size / avgBytesPerLine) * validRatio));
+    });
+  }
 
-      const rowCount = validRows.length;
-      if (rowCount === 0) {
-        reject(
-          new Error(
-            "没有完整数据行（期望每行 " +
-              expected +
-              " 列" +
-              (firstBad
-                ? "；首个问题行 #" + firstBad.line + " 为 " + firstBad.cols + " 列"
-                : "") +
-              "）"
-          )
-        );
+  function attachParseMeta(result, plan, sourceRowsSeen, truncated) {
+    result.parseMeta = {
+      estimatedSourceRows: plan.estimatedRows,
+      sourceRowsSeen: sourceRowsSeen,
+      skipRows: plan.skipRows,
+      decimateStride: plan.decimate,
+      autoDecimateApplied: plan.autoDecimateApplied,
+      truncated: !!truncated,
+    };
+    if (plan.decimate > 1 || plan.skipRows > 0) {
+      const time = new Float32Array(result.rowCount);
+      for (let i = 0; i < result.rowCount; i++) {
+        time[i] = plan.skipRows + i * plan.decimate;
+      }
+      result.time = time;
+      result.timeSource = "decimated_index";
+      result.durationS = result.rowCount ? time[result.rowCount - 1] : 0;
+    }
+    return result;
+  }
+
+  function parseLogStreamSinglePass(lineSource, structure, plan, onProgress) {
+    const seriesMeta = buildSeriesColumns(structure);
+    const expected = expectedColumnCount(structure);
+    let allocRows = plan.storeCount;
+    if (plan.maxRows > 0) allocRows = plan.maxRows;
+    else if (plan.autoDecimateApplied) allocRows = Math.min(plan.storeCount, DEFAULT_MAX_STORED_ROWS);
+    allocRows = Math.max(1024, Math.ceil(allocRows * 1.05));
+
+    const columns = allocateColumnBuffers(expected, allocRows);
+    let validIdx = 0;
+    let stored = 0;
+    let skipped = 0;
+    let firstBad = null;
+    let firstLine = true;
+    let truncated = false;
+    const storeCap = plan.maxRows > 0 ? plan.maxRows : Infinity;
+
+    function handleLine(line, lineNum) {
+      if (firstLine && /^\s*#/.test(line)) {
+        firstLine = false;
         return;
       }
+      firstLine = false;
+      if (!line.trim()) return;
+      const n = countLineFields(line);
+      if (n !== expected) {
+        skipped++;
+        if (!firstBad) firstBad = { line: lineNum || 0, cols: n };
+        return;
+      }
+      const vi = validIdx++;
+      if (vi < plan.skipRows) return;
+      if ((vi - plan.skipRows) % plan.decimate !== 0) return;
+      if (stored >= storeCap) {
+        truncated = true;
+        if (plan.stopEarly) return false;
+        return;
+      }
+      if (stored >= columns[0].length) {
+        growColumns(columns, Math.ceil(columns[0].length * 1.5));
+      }
+      parseLineToColumns(line, expected, columns, stored);
+      stored++;
+    }
 
-      const nCols = expected;
-      const columns = [];
-      for (let c = 0; c < nCols; c++) columns.push(new Float32Array(rowCount));
+    return lineSource(handleLine, onProgress).then(function () {
+      if (stored === 0) {
+        throw new Error(
+          "没有完整数据行（期望每行 " +
+            expected +
+            " 列" +
+            (firstBad ? "；首个问题行 #" + firstBad.line + " 为 " + firstBad.cols + " 列" : "") +
+            "）"
+        );
+      }
+      trimColumns(columns, stored);
+      const result = finalizeLogParse(structure, seriesMeta, columns, stored, skipped, firstBad);
+      return attachParseMeta(result, plan, validIdx, truncated);
+    });
+  }
 
-      let r = 0;
-      const chunk = 2000;
+  function streamFileLines(file, handlers) {
+    handlers = handlers || {};
+    const onLine = handlers.onLine;
+    const maxLines = handlers.maxLines || Infinity;
+    const yieldEvery = handlers.yieldEvery || STREAM_YIELD_LINES;
 
-      function step() {
-        try {
-          const end = Math.min(r + chunk, rowCount);
-          for (; r < end; r++) {
-            const nums = validRows[r];
-            for (let c = 0; c < nCols; c++) columns[c][r] = nums[c];
+    return new Promise(function (resolve, reject) {
+      if (!file.stream) {
+        reject(new Error("浏览器不支持流式读取，请使用 Chrome / Edge"));
+        return;
+      }
+      const reader = file.stream().getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let lineNum = 0;
+      let linesSinceYield = 0;
+      let bytesRead = 0;
+      const totalBytes = file.size || 1;
+      let aborted = false;
+
+      function emitLine(line) {
+        lineNum++;
+        if (onLine) {
+          const keep = onLine(line, lineNum);
+          if (keep === false) {
+            aborted = true;
+            reader.cancel().catch(function () {});
+            resolve(lineNum);
+            return false;
           }
-          if (onProgress) onProgress(rowCount ? r / rowCount : 1);
-          if (r < rowCount) {
-            setTimeout(step, 0);
-          } else {
-            const seriesKeys = seriesMeta.map(function (m) {
-              return m.key;
-            });
-            const keyToCol = new Map();
-            for (let i = 0; i < seriesKeys.length; i++) keyToCol.set(seriesKeys[i], i);
-            const axis = buildTimeAxis(
-              seriesMeta,
-              columns,
-              rowCount,
-              structure.sample_time || 0,
-              !!structure.use_sample_time_axis
-            );
-            resolve({
-              structure: structure,
-              time: axis.time,
-              timeSource: axis.timeSource,
-              durationS: axis.durationS,
-              columns: columns,
-              seriesMeta: seriesMeta,
-              seriesKeys: seriesKeys,
-              keyToCol: keyToCol,
-              rowCount: rowCount,
-              skippedRows: skipped,
-              firstBadLine: firstBad,
-            });
-          }
-        } catch (e) {
-          reject(e);
+        }
+        linesSinceYield++;
+        return true;
+      }
+
+      function processPending() {
+        let nl;
+        while (!aborted && (nl = buffer.indexOf("\n")) >= 0 && lineNum < maxLines) {
+          let line = buffer.slice(0, nl);
+          buffer = buffer.slice(nl + 1);
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (emitLine(line) === false) return;
         }
       }
-      step();
+
+      function pump() {
+        reader.read().then(function (chunk) {
+          if (aborted) return;
+          if (chunk.done) {
+            if (buffer.length && lineNum < maxLines) emitLine(buffer);
+            resolve(lineNum);
+            return;
+          }
+          bytesRead += chunk.value.byteLength;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          processPending();
+          if (aborted) return;
+          if (handlers.onProgress) handlers.onProgress(bytesRead / totalBytes);
+          if (linesSinceYield >= yieldEvery) {
+            linesSinceYield = 0;
+            setTimeout(pump, 0);
+          } else {
+            pump();
+          }
+        }).catch(reject);
+      }
+      pump();
     });
+  }
+
+  function sniffTxtFile(file) {
+    let colCount = 0;
+    let firstLine = true;
+    return streamFileLines(file, {
+      maxLines: 40,
+      yieldEvery: 40,
+      onLine: function (line) {
+        if (firstLine && /^\s*#/.test(line)) {
+          firstLine = false;
+          return;
+        }
+        firstLine = false;
+        if (!line.trim()) return;
+        const n = countLineFields(line);
+        if (n > colCount) colCount = n;
+      },
+    }).then(function () {
+      return colCount;
+    });
+  }
+
+  function parseLogText(text, structure, parseOpts, onProgress) {
+    return new Promise(function (resolve, reject) {
+      setTimeout(function () {
+        let lines;
+        try {
+          lines = text.split("\n");
+        } catch (e) {
+          reject(e);
+          return;
+        }
+        let dataStart = 0;
+        if (lines.length > 0 && /^\s*#/.test(lines[0])) dataStart = 1;
+
+        const expected = expectedColumnCount(structure);
+        let estimatedRows = 0;
+        for (let i = dataStart; i < lines.length; i++) {
+          if (!lines[i].trim()) continue;
+          if (countLineFields(lines[i]) === expected) estimatedRows++;
+        }
+
+        const plan = computeParsePlan(parseOpts, estimatedRows, text.length);
+
+        if (shouldUseSinglePass(parseOpts, estimatedRows)) {
+          let li = dataStart;
+          parseLogStreamSinglePass(
+            function (handleLine, prog) {
+              return new Promise(function (res, rej) {
+                function step() {
+                  try {
+                    const end = Math.min(li + 12000, lines.length);
+                    for (; li < end; li++) handleLine(lines[li], li + 1);
+                    if (prog) prog(li / lines.length);
+                    if (li < lines.length) setTimeout(step, 0);
+                    else res();
+                  } catch (e) {
+                    rej(e);
+                  }
+                }
+                step();
+              });
+            },
+            structure,
+            plan,
+            onProgress
+          )
+            .then(resolve)
+            .catch(reject);
+          return;
+        }
+
+        const seriesMeta = buildSeriesColumns(structure);
+        const rowCount = estimatedRows;
+        if (rowCount === 0) {
+          reject(new Error("没有完整数据行（期望每行 " + expected + " 列）"));
+          return;
+        }
+
+        const columns = allocateColumnBuffers(expected, rowCount);
+        let row = 0;
+        li = dataStart;
+
+        function pass2() {
+          try {
+            const end = Math.min(li + 8000, lines.length);
+            for (; li < end; li++) {
+              if (!lines[li].trim()) continue;
+              if (parseLineToColumns(lines[li], expected, columns, row)) row++;
+            }
+            if (onProgress) onProgress(0.35 + (0.65 * li) / lines.length);
+            if (li < lines.length) setTimeout(pass2, 0);
+            else {
+              if (row !== rowCount) {
+                reject(new Error("解析行数不一致（" + row + " / " + rowCount + "）"));
+                return;
+              }
+              resolve(finalizeLogParse(structure, seriesMeta, columns, rowCount, 0, null));
+            }
+          } catch (e) {
+            reject(e);
+          }
+        }
+        if (onProgress) onProgress(0.35);
+        pass2();
+      }, 0);
+    });
+  }
+
+  function parseLogTextFromFile(file, structure, parseOpts, onProgress) {
+    const expected = expectedColumnCount(structure);
+
+    return estimateValidRowsFromFile(file, expected)
+      .then(function (estimatedRows) {
+        const plan = computeParsePlan(parseOpts, estimatedRows, file.size);
+        if (shouldUseSinglePass(parseOpts, estimatedRows)) {
+          if (plan.autoDecimateApplied && onProgress) onProgress(0.02);
+          return parseLogStreamSinglePass(
+            function (handleLine, prog) {
+              return streamFileLines(file, {
+                onLine: handleLine,
+                onProgress: prog,
+              });
+            },
+            structure,
+            plan,
+            onProgress
+          );
+        }
+
+        const seriesMeta = buildSeriesColumns(structure);
+        let rowCount = 0;
+        let skipped = 0;
+        let firstBad = null;
+        let firstLine = true;
+
+        return streamFileLines(file, {
+          onLine: function (line, lineNum) {
+            if (firstLine && /^\s*#/.test(line)) {
+              firstLine = false;
+              return;
+            }
+            firstLine = false;
+            if (!line.trim()) return;
+            const n = countLineFields(line);
+            if (n === expected) rowCount++;
+            else {
+              skipped++;
+              if (!firstBad) firstBad = { line: lineNum, cols: n };
+            }
+          },
+          onProgress: function (frac) {
+            if (onProgress) onProgress(frac * 0.4);
+          },
+        }).then(function () {
+          if (rowCount === 0) {
+            throw new Error(
+              "没有完整数据行（期望每行 " +
+                expected +
+                " 列" +
+                (firstBad ? "；首个问题行 #" + firstBad.line + " 为 " + firstBad.cols + " 列" : "") +
+                "）"
+            );
+          }
+          const columns = allocateColumnBuffers(expected, rowCount);
+          let row = 0;
+          firstLine = true;
+          return streamFileLines(file, {
+            onLine: function (line) {
+              if (firstLine && /^\s*#/.test(line)) {
+                firstLine = false;
+                return;
+              }
+              firstLine = false;
+              if (!line.trim()) return;
+              if (parseLineToColumns(line, expected, columns, row)) row++;
+            },
+            onProgress: function (frac) {
+              if (onProgress) onProgress(0.4 + frac * 0.6);
+            },
+          }).then(function () {
+            if (row !== rowCount) {
+              throw new Error("解析行数不一致（" + row + " / " + rowCount + "）");
+            }
+            return finalizeLogParse(structure, seriesMeta, columns, rowCount, skipped, firstBad);
+          });
+        });
+      });
   }
 
   function parseLogBinary(buffer, structure, onProgress) {
@@ -489,14 +951,19 @@
     "#b4f9f8",
   ];
   const MAX_POINTS = 6000;
+  const LARGE_TXT_BYTES = 16 * 1024 * 1024;
+  const DEFAULT_MAX_STORED_ROWS = 300000;
+  const STREAM_YIELD_LINES = 12000;
   const LS_S = "cuarm_logviz_structure_v1";
   const LS_K = "cuarm_logviz_selected_v1";
+  const LS_P = "cuarm_logviz_parse_v1";
 
   function $(id) {
     return document.getElementById(id);
   }
 
   var rawText = null;
+  var rawTxtFile = null;
   var rawBinary = null;
   var parsed = null;
   var selected = new Set();
@@ -645,6 +1112,24 @@
     saveSelectedKeys();
   }
 
+  function formatBytes(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return n + " B";
+  }
+
+  function setLoadLabel(msg) {
+    const el = $("loadLabel");
+    if (msg) {
+      el.textContent = msg;
+      el.hidden = false;
+    } else {
+      el.hidden = true;
+      el.textContent = "";
+    }
+  }
+
   function setProgress(f) {
     const p = $("progress");
     const b = p.querySelector(".bar");
@@ -652,6 +1137,7 @@
       if (f >= 1) {
         p.hidden = true;
         b.style.width = "0%";
+        setLoadLabel(null);
       }
     } else {
       p.hidden = false;
@@ -669,10 +1155,72 @@
     }
   }
 
+  function axisLabel(key) {
+    if (key.indexOf("Meta.") === 0) return "Meta";
+    const m = key.match(/^(Arm\d+|Gripper\d+)/);
+    if (m) return m[1];
+    const i = key.lastIndexOf(".");
+    return i > 0 ? key.slice(0, i) : key;
+  }
+
   function groupLabel(key) {
     if (key.indexOf("Meta.") === 0) return "Meta";
     const i = key.lastIndexOf(".");
     return i > 0 ? key.slice(0, i) : key;
+  }
+
+  function syncSelectAllCheckbox(cb, keys) {
+    let n = 0;
+    for (let i = 0; i < keys.length; i++) {
+      if (selected.has(keys[i])) n++;
+    }
+    cb.checked = keys.length > 0 && n === keys.length;
+    cb.indeterminate = n > 0 && n < keys.length;
+  }
+
+  function setKeysSelected(keys, on) {
+    for (let i = 0; i < keys.length; i++) {
+      if (on) selected.add(keys[i]);
+      else selected.delete(keys[i]);
+    }
+    saveSelectedKeys();
+    redrawPlot();
+    $("selCount").textContent = "已选 " + selected.size + " 条曲线";
+  }
+
+  function bindFieldCheckbox(cb, key, groupKeys, groupCb) {
+    cb.checked = selected.has(key);
+    cb.addEventListener("change", function () {
+      if (cb.checked) selected.add(key);
+      else selected.delete(key);
+      saveSelectedKeys();
+      if (groupCb) syncSelectAllCheckbox(groupCb, groupKeys);
+      redrawPlot();
+      $("selCount").textContent = "已选 " + selected.size + " 条曲线";
+    });
+  }
+
+  function appendSelectAllSummary(det, title, keys, titleHint) {
+    const sum = document.createElement("summary");
+    sum.className = "tree-axis-summary";
+    const lab = document.createElement("label");
+    lab.className = "tree-select-all";
+    const gcb = document.createElement("input");
+    gcb.type = "checkbox";
+    gcb.title = titleHint || "全选";
+    syncSelectAllCheckbox(gcb, keys);
+    lab.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+    });
+    gcb.addEventListener("change", function () {
+      setKeysSelected(keys, gcb.checked);
+      renderTree();
+    });
+    lab.appendChild(gcb);
+    lab.appendChild(document.createTextNode(title));
+    sum.appendChild(lab);
+    det.appendChild(sum);
+    return gcb;
   }
 
   function fieldTail(key) {
@@ -707,46 +1255,82 @@
       return;
     }
     const vis = visibleMeta();
-    const groups = new Map();
+    const axes = new Map();
     for (let i = 0; i < vis.length; i++) {
       const m = vis[i];
+      const ax = axisLabel(m.key);
+      if (!axes.has(ax)) axes.set(ax, new Map());
+      const sub = axes.get(ax);
       const g = groupLabel(m.key);
-      if (!groups.has(g)) groups.set(g, []);
-      groups.get(g).push(m);
+      if (!sub.has(g)) sub.set(g, []);
+      sub.get(g).push(m);
     }
-    const keys = Array.from(groups.keys()).sort();
-    for (let gi = 0; gi < keys.length; gi++) {
-      const gk = keys[gi];
-      const items = groups.get(gk);
-      const det = document.createElement("details");
-      det.open = true;
-      const sum = document.createElement("summary");
-      sum.textContent = gk;
-      det.appendChild(sum);
-      const ul = document.createElement("ul");
-      for (let i = 0; i < items.length; i++) {
-        const m = items[i];
-        const li = document.createElement("li");
-        const lab = document.createElement("label");
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = selected.has(m.key);
-        cb.addEventListener("change", function () {
-          if (cb.checked) selected.add(m.key);
-          else selected.delete(m.key);
-          saveSelectedKeys();
-          redrawPlot();
-          $("selCount").textContent = "已选 " + selected.size + " 条曲线";
-        });
-        lab.appendChild(cb);
-        const sp = document.createElement("span");
-        sp.textContent = fieldTail(m.key);
-        lab.appendChild(sp);
-        li.appendChild(lab);
-        ul.appendChild(li);
+    const axisKeys = Array.from(axes.keys()).sort();
+    for (let ai = 0; ai < axisKeys.length; ai++) {
+      const axk = axisKeys[ai];
+      const subGroups = axes.get(axk);
+      const axisFieldKeys = [];
+      subGroups.forEach(function (items) {
+        for (let j = 0; j < items.length; j++) axisFieldKeys.push(items[j].key);
+      });
+
+      const axDet = document.createElement("details");
+      axDet.open = true;
+      const axisCb = appendSelectAllSummary(axDet, axk, axisFieldKeys, "全选本轴");
+
+      const subKeys = Array.from(subGroups.keys()).sort();
+      const isSingleGroup = subKeys.length === 1 && subKeys[0] === axk;
+      if (isSingleGroup) {
+        const items = subGroups.get(subKeys[0]);
+        const ul = document.createElement("ul");
+        for (let i = 0; i < items.length; i++) {
+          const m = items[i];
+          const li = document.createElement("li");
+          const lab = document.createElement("label");
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          bindFieldCheckbox(cb, m.key, axisFieldKeys, axisCb);
+          lab.appendChild(cb);
+          const sp = document.createElement("span");
+          sp.textContent = fieldTail(m.key);
+          lab.appendChild(sp);
+          li.appendChild(lab);
+          ul.appendChild(li);
+        }
+        axDet.appendChild(ul);
+      } else {
+        for (let gi = 0; gi < subKeys.length; gi++) {
+          const gk = subKeys[gi];
+          const items = subGroups.get(gk);
+          const groupFieldKeys = items.map(function (m) {
+            return m.key;
+          });
+          const det = document.createElement("details");
+          det.open = true;
+          const groupCb = appendSelectAllSummary(det, gk, groupFieldKeys, "全选本组");
+          const ul = document.createElement("ul");
+          for (let i = 0; i < items.length; i++) {
+            const m = items[i];
+            const li = document.createElement("li");
+            const lab = document.createElement("label");
+            const cb = document.createElement("input");
+            cb.type = "checkbox";
+            bindFieldCheckbox(cb, m.key, groupFieldKeys, groupCb);
+            cb.addEventListener("change", function () {
+              syncSelectAllCheckbox(axisCb, axisFieldKeys);
+            });
+            lab.appendChild(cb);
+            const sp = document.createElement("span");
+            sp.textContent = fieldTail(m.key);
+            lab.appendChild(sp);
+            li.appendChild(lab);
+            ul.appendChild(li);
+          }
+          det.appendChild(ul);
+          axDet.appendChild(det);
+        }
       }
-      det.appendChild(ul);
-      tree.appendChild(det);
+      tree.appendChild(axDet);
     }
     $("selCount").textContent = "已选 " + selected.size + " 条曲线";
   }
@@ -782,7 +1366,9 @@
         ? "t (s) · running_cost cumulative"
         : parsed.timeSource === "sample_time"
           ? "t (s) · sample_time"
-          : "sample index";
+          : parsed.timeSource === "decimated_index"
+            ? "source row index (decimated)"
+            : "sample index";
     const layout = {
       autosize: true,
       paper_bgcolor: "#16161e",
@@ -810,13 +1396,39 @@
     });
   }
 
+  function formatParseMetaNote(m) {
+    if (!m) return "";
+    const parts = [];
+    if (m.estimatedSourceRows) {
+      parts.push("源约 " + m.estimatedSourceRows.toLocaleString() + " 行");
+    }
+    if (m.decimateStride > 1) {
+      parts.push("每 " + m.decimateStride + " 行取 1");
+      if (m.autoDecimateApplied) parts.push("自动");
+    }
+    if (m.skipRows > 0) parts.push("跳过前 " + m.skipRows.toLocaleString());
+    if (m.truncated) parts.push("已截断");
+    return parts.length ? " · " + parts.join(" · ") : "";
+  }
+
   function parseNow() {
-    if (!rawText && !rawBinary) return;
+    if (!rawText && !rawBinary && !rawTxtFile) return;
     setErr(null);
     var s;
+    var parseOpts;
     try {
       s = readStructureFromForm();
+      parseOpts = readParseOptionsFromForm();
+      saveParseOptionsForm(parseOpts);
       if (loadedColumns && loadedColumns.length) s.columns = loadedColumns;
+      else if (rawText) {
+        const colCount = sniffTxtColumnCount(rawText);
+        if (colCount > 0) {
+          const plan = resolveTxtParsePlan(colCount, s);
+          setActiveSchema(plan.schemaId);
+          s = plan.structure;
+        }
+      }
       s.use_sample_time_axis = useSampleTimeAxis;
       saveStructureForm(s);
     } catch (e) {
@@ -831,15 +1443,24 @@
       s.ArmSize +
       " · GripperSize=" +
       s.GripperSize +
-      (rawBinary ? " · schema=CTLG binary" : s.columns ? " · schema=sidecar" : " · schema=log_schema");
+      " · schema=" +
+      schemaLabel() +
+      (rawTxtFile ? " · 流式" : "");
     setProgress(0.01);
+    if (rawTxtFile) {
+      setLoadLabel("流式解析 " + fileName + "（" + formatBytes(rawTxtFile.size) + "）…");
+    }
     var parsePromise = rawBinary
       ? parseLogBinary(rawBinary, s, function (f) {
           setProgress(f);
         })
-      : parseLogText(rawText, s, function (f) {
-          setProgress(f);
-        });
+      : rawTxtFile
+        ? parseLogTextFromFile(rawTxtFile, s, parseOpts, function (f) {
+            setProgress(f);
+          })
+        : parseLogText(rawText, s, parseOpts, function (f) {
+            setProgress(f);
+          });
     parsePromise
       .then(function (p) {
         parsed = p;
@@ -851,6 +1472,8 @@
             (p.durationS != null ? p.durationS.toFixed(3) + " s" : "");
         } else if (p.timeSource === "sample_time") {
           timeNote = " · 时间轴 sample_time";
+        } else if (p.timeSource === "decimated_index") {
+          timeNote = " · 时间轴为源行号（降采样）";
         } else {
           timeNote = " · 时间轴为行号";
         }
@@ -869,6 +1492,7 @@
           " 列" +
           binNote +
           timeNote +
+          formatParseMetaNote(p.parseMeta) +
           (p.skippedRows
             ? " · 跳过 " +
               p.skippedRows +
@@ -926,6 +1550,7 @@
         try {
           rawBinary = r.result;
           rawText = null;
+          rawTxtFile = null;
           useSampleTimeAxis = false;
           const header = TelemetryBinary.readHeader(rawBinary);
           const structure = TelemetryBinary.structureFromHeader(header);
@@ -943,12 +1568,49 @@
       r.readAsArrayBuffer(f);
       return;
     }
+    if (f.size > LARGE_TXT_BYTES) {
+      rawTxtFile = f;
+      rawText = null;
+      rawBinary = null;
+      useSampleTimeAxis = false;
+      loadedColumns = null;
+      setErr(null);
+      setProgress(0.01);
+      setLoadLabel("检测大文件 " + f.name + "（" + formatBytes(f.size) + "）…");
+      schemasReady
+        .then(function () {
+          return sniffTxtFile(f);
+        })
+        .then(function (colCount) {
+          const plan = resolveTxtParsePlan(colCount, readStructureFromForm());
+          setActiveSchema(plan.schemaId);
+          applyStructureToForm(plan.structure);
+          saveStructureForm(plan.structure);
+          parseNow();
+        })
+        .catch(function (e) {
+          rawTxtFile = null;
+          setProgress(1);
+          setErr(e.message || String(e));
+        });
+      return;
+    }
+    rawTxtFile = null;
     const r = new FileReader();
     r.onload = function () {
       rawText = String(r.result);
       rawBinary = null;
       useSampleTimeAxis = false;
-      parseNow();
+      loadedColumns = null;
+      schemasReady.then(function () {
+        try {
+          const plan = resolveTxtParsePlan(rawText, readStructureFromForm());
+          setActiveSchema(plan.schemaId);
+          applyStructureToForm(plan.structure);
+          saveStructureForm(plan.structure);
+        } catch (_) {}
+        parseNow();
+      });
     };
     r.readAsText(f);
   });
@@ -969,7 +1631,7 @@
       } catch (e) {
         setErr("JSON: " + e.message);
       }
-      if (rawBinary || rawText) parseNow();
+      if (rawBinary || rawText || rawTxtFile) parseNow();
     };
     r.readAsText(f);
   });
@@ -1025,6 +1687,24 @@
     selected.clear();
     visibleMeta().forEach(function (m) {
       if (m.key.indexOf(".joint_position") !== -1) selected.add(m.key);
+    });
+    saveSelectedKeys();
+    renderTree();
+    redrawPlot();
+  });
+
+  $("selVel").addEventListener("click", function () {
+    if (!parsed) return;
+    selected.clear();
+    visibleMeta().forEach(function (m) {
+      const k = m.key;
+      if (
+        k.indexOf(".joint_velocity") !== -1 ||
+        k.indexOf(".motor_velocity") !== -1 ||
+        k.indexOf(".filtered_joint_vel") !== -1
+      ) {
+        selected.add(k);
+      }
     });
     saveSelectedKeys();
     renderTree();
@@ -1098,21 +1778,30 @@
 
   buildChips();
   loadStructureForm();
+  loadParseOptionsForm();
   loadSelectedKeys();
   refreshColInfo();
 
-  fetch("log_schema.json")
-    .then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    })
-    .then(function (j) {
-      if (j && Array.isArray(j.meta) && Array.isArray(j.per_arm)) {
-        logSchema = j;
-        refreshColInfo();
-      }
-    })
-    .catch(function () {
-      /* 使用内置 FALLBACK_SCHEMA */
-    });
+  function loadSchemaJson(url, assign) {
+    return fetch(url)
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (j) {
+        if (j && Array.isArray(j.meta) && Array.isArray(j.per_arm)) assign(j);
+      })
+      .catch(function () {});
+  }
+
+  var schemasReady = Promise.all([
+    loadSchemaJson("log_schema.json", function (j) {
+      logSchema = j;
+    }),
+    loadSchemaJson("log_schema_rt_control.json", function (j) {
+      rtControlSchema = j;
+    }),
+  ]).then(function () {
+    refreshColInfo();
+  });
 })();

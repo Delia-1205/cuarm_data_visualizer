@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "id": "rt_control",
+  "source": "cuarm_rt_control/example/rt_control.cpp::write_data_task",
+  "note": "legacy TXT 日志（rt_control 写盘格式）；与 log_schema.json（telemetry_sink）不同",
+  "meta": [
+    "running_cost",
+    "robotics_total_cost",
+    "communication_cost",
+    "hardware_communication_cost",
+    "robotics_setup_cost",
+    "robotics_Null_cost",
+    "robotics_FK_cost",
+    "robotics_IK_cost",
+    "robotics_ID_cost",
+    "robotics_simulation_addition_cost",
+    "command_mode",
+    "motion_type"
+  ],
+  "per_arm": [
+    {
+      "kind": "per_joint_interleaved",
+      "fields": [
+        "sliced_tar",
+        "motor_target",
+        "joint_position",
+        "joint_velocity",
+        "joint_acceleration",
+        "motor_position",
+        "motor_velocity",
+        "motor_torque"
+      ]
+    },
+    {
+      "kind": "fixed",
+      "name": "tool_pose",
+      "labels": ["x", "y", "z", "qw", "qx", "qy", "qz"]
+    },
+    { "kind": "per_joint", "field": "target_before_interpolation" },
+    { "kind": "per_joint", "field": "motor_raw_position" },
+    { "kind": "per_joint", "field": "joint_gravity" },
+    { "kind": "per_joint", "field": "gravity" },
+    { "kind": "per_joint", "field": "sat_motor_cmd" },
+    { "kind": "per_joint", "field": "joint_impedance" },
+    { "kind": "per_joint", "field": "impedance" },
+    { "kind": "per_joint", "field": "joint_torque" },
+    { "kind": "per_joint", "field": "torque_sensor_raw" },
+    { "kind": "per_joint", "field": "torque_sensor" },
+    { "kind": "per_joint", "field": "encoder_sensor_raw" },
+    { "kind": "per_joint", "field": "friction" },
+    { "kind": "per_joint", "field": "gravity_kd_effect" },
+    { "kind": "per_joint", "field": "filtered_joint_vel" }
+  ],
+  "per_gripper": [
+    { "kind": "per_joint", "field": "gripper_command" },
+    { "kind": "per_joint", "field": "gripper_act_set_command" },
+    { "kind": "per_joint", "field": "gripper_position" }
+  ],
+  "categories": {
+    "control": [
+      "sliced_tar",
+      "motor_target",
+      "target_before_interpolation",
+      "sat_motor_cmd",
+      "gripper_command",
+      "gripper_act_set_command"
+    ],
+    "state": [
+      "joint_position",
+      "joint_velocity",
+      "joint_acceleration",
+      "motor_position",
+      "motor_velocity",
+      "tool_pose",
+      "motor_raw_position",
+      "filtered_joint_vel",
+      "gripper_position",
+      "encoder_sensor_raw"
+    ],
+    "mechanics": [
+      "joint_torque",
+      "motor_torque",
+      "joint_gravity",
+      "gravity",
+      "joint_impedance",
+      "impedance",
+      "torque_sensor_raw",
+      "torque_sensor",
+      "friction",
+      "gravity_kd_effect"
+    ]
+  }
+}

@@ -25,12 +25,20 @@
     <aside class="side">
       <section class="side-structure">
         <h2>机器人结构</h2>
-        <label>每臂关节数（逗号分隔）<input id="joints" type="text" value="6" /></label>
+        <label>每臂关节数（逗号分隔）<input id="joints" type="text" value="7,2,7" /></label>
         <label>夹爪关节数（逗号，可空）<input id="grips" type="text" value="" /></label>
         <label>sample_time（秒；填写后点应用才用作横轴，空则用 running_cost）<input id="sampleT" type="text" value="" /></label>
         <button type="button" class="btn primary" id="btnApply">应用结构并重新解析</button>
         <p id="colInfo" class="muted"></p>
       </section>
+      <details class="side-parse">
+        <summary>大文件 / 分块</summary>
+        <label>跳过前 N 行（有效数据行）<input id="parseSkip" type="number" min="0" value="0" /></label>
+        <label>最多加载行数<input id="parseMaxRows" type="number" min="0" placeholder="300000" title="0 表示仅按降采样控制" /></label>
+        <label>降采样：每 N 行取 1<input id="parseDecimate" type="number" min="1" value="1" /></label>
+        <label class="chk"><input id="parseAutoDecimate" type="checkbox" checked /> 大文件自动降采样</label>
+        <p class="muted parse-hint">超过约 30 万行时自动降采样；设「最多加载」可在读满后提前停止。</p>
+      </details>
       <section class="side-fields">
         <h2>字段</h2>
         <label>搜索 <input id="search" type="search" placeholder="joint_position …" /></label>
@@ -39,6 +47,7 @@
           <button type="button" class="btn sm" id="allVis">全选可见</button>
           <button type="button" class="btn sm" id="clearSel">清空</button>
           <button type="button" class="btn sm" id="selPos">全部 joint_position</button>
+          <button type="button" class="btn sm" id="selVel">速度相关</button>
           <button type="button" class="btn sm" id="selTq">torque 相关</button>
         </div>
         <div id="tree" class="tree"></div>
@@ -48,6 +57,7 @@
     <main class="main">
       <div class="main-status">
         <div id="err" class="err" hidden></div>
+        <p id="loadLabel" class="load-label" hidden></p>
         <div id="progress" class="progress" hidden><div class="bar"></div></div>
         <p id="stats" class="muted stats-line"></p>
       </div>
@@ -68,7 +78,7 @@
     </div>
   </div>
 
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+  <script src="plotly-2.35.2.min.js" charset="utf-8"></script>
   <script src="telemetry_binary.js"></script>
   <script src="telemetry_wasm_bridge.js"></script>
   <script src="viewer.js"></script>
