@@ -11,7 +11,31 @@
   var RECORD_SIZE_V1 = 2120;
   var TOOL_POSE_LABELS = ["x", "y", "z", "qw", "qx", "qy", "qz"];
   var TASK_LABELS = ["x", "y", "z", "rx", "ry", "rz"];
-  var META_FIELDS = [
+  /** 文本 telemetry（# 表头）与 flatNameToViewerKey 使用的 meta 列 */
+  var META_FIELDS_FLAT = [
+    "running_cost",
+    "robotics_total_cost",
+    "hardware_communication_cost",
+    "communication_cost",
+    "motor_communication_cost",
+    "gripper_communication_cost",
+    "button_communication_cost",
+    "srv_state_seq_id",
+    "client_seq_id",
+    "core_udp_send_result",
+    "core_udp_receive_result",
+    "actuator_mode",
+    "control_strategy",
+    "branch_state",
+    "system_state",
+    "plan_result",
+    "system_diagnostic_flags",
+    "button_state",
+    "simulation",
+    "target_type",
+  ];
+  /** CTLG 二进制 flatten 仍用旧 meta 顺序（待 parseSaveDataV1 对齐后同步） */
+  var META_FIELDS_BIN = [
     "running_cost",
     "robotics_total_cost",
     "hardware_communication_cost",
@@ -29,7 +53,7 @@
     "simulation",
     "target_type",
   ];
-  var META_SET = new Set(META_FIELDS);
+  var META_SET = new Set(META_FIELDS_FLAT);
 
   function readU64(dv, o) {
     var lo = dv.getUint32(o, true);
@@ -104,7 +128,7 @@
   }
 
   function columnNamesV1(header) {
-    var names = META_FIELDS.slice();
+    var names = META_FIELDS_BIN.slice();
     var armCount = header ? header.arm_size : MAX_ARM_SIZE;
     var griCount = header ? header.gripper_size : MAX_GRIPPER_SIZE;
     for (var armI = 0; armI < armCount; armI++) {
@@ -203,6 +227,73 @@
 
   function flatNamesToViewerKeys(flatNames) {
     return flatNames.map(flatNameToViewerKey);
+  }
+
+  /** 从文本表头扁平列名推断 ArmSize / JointSize / GripperSize */
+  function structureFromFlatNames(flatNames) {
+    var armJoints = {};
+    var grippers = {};
+    for (var i = 0; i < flatNames.length; i++) {
+      var name = flatNames[i];
+      var m = name.match(/^arm(\d+)_j(\d+)_/);
+      if (m) {
+        var a = Number(m[1]);
+        var j = Number(m[2]);
+        if (!armJoints[a]) armJoints[a] = {};
+        armJoints[a][j] = true;
+      }
+      m = name.match(/^gripper(\d+)_j(\d+)_/);
+      if (m) {
+        var g = Number(m[1]);
+        var gj = Number(m[2]);
+        if (!grippers[g]) grippers[g] = {};
+        grippers[g][gj] = true;
+      }
+    }
+    var armIndices = Object.keys(armJoints)
+      .map(Number)
+      .sort(function (x, y) {
+        return x - y;
+      });
+    var armSize = armIndices.length ? armIndices[armIndices.length - 1] + 1 : 1;
+    var jointSize = [];
+    for (var ai = 0; ai < armSize; ai++) {
+      var js = armJoints[ai] ? Object.keys(armJoints[ai]).map(Number) : [];
+      jointSize.push(js.length ? Math.max.apply(null, js) + 1 : 0);
+    }
+    var griIndices = Object.keys(grippers)
+      .map(Number)
+      .sort(function (x, y) {
+        return x - y;
+      });
+    var gripperJointSize = [];
+    for (var gi = 0; gi < griIndices.length; gi++) {
+      var gIdx = griIndices[gi];
+      var gjs = Object.keys(grippers[gIdx]).map(Number);
+      gripperJointSize.push(gjs.length ? Math.max.apply(null, gjs) + 1 : 0);
+    }
+    return {
+      ArmSize: armSize,
+      JointSize: jointSize,
+      GripperSize: gripperJointSize.length,
+      GripperJointSize: gripperJointSize,
+    };
+  }
+
+  /** 解析 telemetry 文本首行 `# col1 col2 ...` */
+  function parseTextHeader(text) {
+    var lines = String(text).split("\n");
+    if (!lines.length || !/^\s*#/.test(lines[0])) return null;
+    var flatNames = lines[0]
+      .replace(/^\s*#\s?/, "")
+      .trim()
+      .split(/\s+/);
+    if (!flatNames.length) return null;
+    return {
+      flatNames: flatNames,
+      viewerKeys: flatNamesToViewerKeys(flatNames),
+      structure: structureFromFlatNames(flatNames),
+    };
   }
 
   function parseSaveDataV1(dv, baseOffset) {
@@ -488,6 +579,8 @@
     columnNamesV1: columnNamesV1,
     flatNameToViewerKey: flatNameToViewerKey,
     flatNamesToViewerKeys: flatNamesToViewerKeys,
+    structureFromFlatNames: structureFromFlatNames,
+    parseTextHeader: parseTextHeader,
     parseBinaryTable: parseBinaryTable,
   };
 })(typeof window !== "undefined" ? window : globalThis);

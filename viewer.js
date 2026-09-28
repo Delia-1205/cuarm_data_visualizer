@@ -2,7 +2,7 @@
 (function () {
   "use strict";
 
-  /** Fallback when log_schema.json 未加载；须与 log_utils.ipp::writeToLogFile 一致 */
+  /** Fallback when log_schema.json 未加载；须与 telemetry_sink.cpp::formatTextLine 一致 */
   const FALLBACK_SCHEMA = {
     version: 1,
     meta: [
@@ -13,6 +13,10 @@
       "motor_communication_cost",
       "gripper_communication_cost",
       "button_communication_cost",
+      "srv_state_seq_id",
+      "client_seq_id",
+      "core_udp_send_result",
+      "core_udp_receive_result",
       "actuator_mode",
       "control_strategy",
       "branch_state",
@@ -42,12 +46,17 @@
         name: "tool_pose",
         labels: ["x", "y", "z", "qw", "qx", "qy", "qz"],
       },
-      { kind: "per_joint", field: "target_before_interpolation" },
-      { kind: "per_joint", field: "sliced_tar" },
-      { kind: "per_joint", field: "pid_cmd" },
-      { kind: "per_joint", field: "guard_pos_cmd" },
-      { kind: "per_joint", field: "sat_cmd" },
-      { kind: "per_joint", field: "jump_cmd" },
+      {
+        kind: "per_joint_interleaved",
+        fields: [
+          "target_before_interpolation",
+          "sliced_tar",
+          "pid_cmd",
+          "guard_pos_cmd",
+          "sat_cmd",
+          "jump_cmd",
+        ],
+      },
       {
         kind: "fixed",
         name: "task_target_before_interpolation",
@@ -63,10 +72,15 @@
         name: "task_pose",
         labels: ["x", "y", "z", "rx", "ry", "rz"],
       },
-      { kind: "per_joint", field: "joint_gravity" },
-      { kind: "per_joint", field: "friction" },
-      { kind: "per_joint", field: "gravity_kd_effect" },
-      { kind: "per_joint", field: "filtered_joint_vel" },
+      {
+        kind: "per_joint_interleaved",
+        fields: [
+          "joint_gravity",
+          "friction",
+          "gravity_kd_effect",
+          "filtered_joint_vel",
+        ],
+      },
       { kind: "per_joint", field: "arm_diagnostic_flags" },
     ],
     per_gripper: [
@@ -289,11 +303,21 @@
     return new Promise(function (resolve, reject) {
       const lines = text.split("\n");
       let dataStart = 0;
-      if (lines.length > 0 && /^\s*#/.test(lines[0])) {
+      let parseStruct = structure;
+      const headerInfo = TelemetryBinary.parseTextHeader(text);
+      if (headerInfo) {
+        dataStart = 1;
+        if (!parseStruct.columns || !parseStruct.columns.length) {
+          parseStruct = Object.assign({}, parseStruct, { columns: headerInfo.viewerKeys });
+        }
+      } else if (lines.length > 0 && /^\s*#/.test(lines[0])) {
         dataStart = 1;
       }
-      const seriesMeta = buildSeriesColumns(structure);
-      const expected = expectedColumnCount(structure);
+      const seriesMeta = buildSeriesColumns(parseStruct);
+      const expected =
+        parseStruct.columns && parseStruct.columns.length
+          ? parseStruct.columns.length
+          : expectedColumnCount(parseStruct);
       const validRows = [];
       let skipped = 0;
       let firstBad = null;
@@ -357,11 +381,11 @@
               seriesMeta,
               columns,
               rowCount,
-              structure.sample_time || 0,
-              !!structure.use_sample_time_axis
+              parseStruct.sample_time || 0,
+              !!parseStruct.use_sample_time_axis
             );
             resolve({
-              structure: structure,
+              structure: parseStruct,
               time: axis.time,
               timeSource: axis.timeSource,
               durationS: axis.durationS,
@@ -817,13 +841,25 @@
     try {
       s = readStructureFromForm();
       if (loadedColumns && loadedColumns.length) s.columns = loadedColumns;
+      if (rawText && (!s.columns || !s.columns.length)) {
+        var txtHdr = TelemetryBinary.parseTextHeader(rawText);
+        if (txtHdr) s.columns = txtHdr.viewerKeys;
+      }
       s.use_sample_time_axis = useSampleTimeAxis;
       saveStructureForm(s);
     } catch (e) {
       setErr(e.message);
       return;
     }
-    const nExpect = expectedColumnCount(s);
+    const nExpect =
+      s.columns && s.columns.length ? s.columns.length : expectedColumnCount(s);
+    var schemaNote = " · schema=log_schema";
+    if (rawBinary) schemaNote = " · schema=CTLG binary";
+    else if (s.columns && s.columns.length) {
+      schemaNote = TelemetryBinary.parseTextHeader(rawText)
+        ? " · schema=text header"
+        : " · schema=sidecar";
+    }
     $("colInfo").textContent =
       "期望每行 " +
       nExpect +
@@ -831,7 +867,7 @@
       s.ArmSize +
       " · GripperSize=" +
       s.GripperSize +
-      (rawBinary ? " · schema=CTLG binary" : s.columns ? " · schema=sidecar" : " · schema=log_schema");
+      schemaNote;
     setProgress(0.01);
     var parsePromise = rawBinary
       ? parseLogBinary(rawBinary, s, function (f) {
@@ -948,6 +984,16 @@
       rawText = String(r.result);
       rawBinary = null;
       useSampleTimeAxis = false;
+      var txtHdr = TelemetryBinary.parseTextHeader(rawText);
+      if (txtHdr) {
+        loadedColumns = txtHdr.viewerKeys;
+        applyStructureToForm(txtHdr.structure);
+        saveStructureForm(
+          Object.assign({}, txtHdr.structure, { columns: txtHdr.viewerKeys })
+        );
+      } else {
+        loadedColumns = null;
+      }
       parseNow();
     };
     r.readAsText(f);

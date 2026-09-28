@@ -12,6 +12,8 @@
     "button_communication_cost",
     "srv_state_seq_id",
     "client_seq_id",
+    "core_udp_send_result",
+    "core_udp_receive_result",
     "actuator_mode",
     "control_strategy",
     "branch_state",
@@ -53,12 +55,19 @@
       ]
     },
     {
-      "kind": "per_joint_interleaved",
-      "fields": [
-        "task_target_before_interpolation",
-        "task_sliced_tar",
-        "task_pose"
-      ]
+      "kind": "fixed",
+      "name": "task_target_before_interpolation",
+      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+    },
+    {
+      "kind": "fixed",
+      "name": "task_sliced_tar",
+      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+    },
+    {
+      "kind": "fixed",
+      "name": "task_pose",
+      "labels": ["x", "y", "z", "rx", "ry", "rz"]
     },
     {
       "kind": "per_joint_interleaved",

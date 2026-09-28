@@ -38,6 +38,10 @@
         <tr><td><code>motor_communication_cost</code></td><td>电机总线读写耗时</td></tr>
         <tr><td><code>gripper_communication_cost</code></td><td>夹爪通信耗时</td></tr>
         <tr><td><code>button_communication_cost</code></td><td>按钮通信耗时</td></tr>
+        <tr><td><code>srv_state_seq_id</code></td><td>服务端状态序列号</td></tr>
+        <tr><td><code>client_seq_id</code></td><td>客户端指令序列号</td></tr>
+        <tr><td><code>core_udp_send_result</code></td><td>核心 UDP 发送结果</td></tr>
+        <tr><td><code>core_udp_receive_result</code></td><td>核心 UDP 接收结果</td></tr>
         <tr><td><code>actuator_mode</code></td><td>下发给驱动器的模式：<code>0</code> 位置 / <code>1</code> 速度 / <code>2</code> 力矩</td></tr>
         <tr><td><code>control_strategy</code></td><td>规划策略：<code>0</code> 关节 / <code>1</code> 笛卡尔 / <code>2</code> 直线 / <code>3</code> 零空间 / <code>4</code> 重力补偿 / <code>5</code> 示教 / <code>6</code> 回放</td></tr>
         <tr><td><code>branch_state</code></td><td>本周期主循环分支（故障、恢复、新指令、无客户端等）</td></tr>
