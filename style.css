@@ -511,3 +511,22 @@ html.embedded .docs-wrap {
   border: 0;
   background: var(--bg);
 }
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 15, 20, 0.72);
+  border: 2px dashed var(--accent);
+  pointer-events: none;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.drop-overlay[hidden] {
+  display: none;
+}
