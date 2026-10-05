@@ -951,8 +951,7 @@
     }
   }
 
-  $("dataFile").addEventListener("change", function (ev) {
-    const f = ev.target.files[0];
+  function loadDataFile(f) {
     if (!f) return;
     fileName = f.name.replace(/\.[^.]+$/, "") || "chart";
     const isBin = /\.bin$/i.test(f.name);
@@ -997,10 +996,9 @@
       parseNow();
     };
     r.readAsText(f);
-  });
+  }
 
-  $("jsonFile").addEventListener("change", function (ev) {
-    const f = ev.target.files[0];
+  function loadJsonFile(f) {
     if (!f) return;
     const r = new FileReader();
     r.onload = function () {
@@ -1018,6 +1016,76 @@
       if (rawBinary || rawText) parseNow();
     };
     r.readAsText(f);
+  }
+
+  function hasFileDrag(ev) {
+    const dt = ev.dataTransfer;
+    if (!dt || !dt.types) return false;
+    return Array.prototype.indexOf.call(dt.types, "Files") >= 0;
+  }
+
+  function preventDragDefaults(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  var dragDepth = 0;
+
+  function showDropOverlay() {
+    const el = $("dropOverlay");
+    if (el) el.hidden = false;
+  }
+
+  function hideDropOverlay() {
+    dragDepth = 0;
+    const el = $("dropOverlay");
+    if (el) el.hidden = true;
+  }
+
+  document.addEventListener("dragenter", function (ev) {
+    if (!hasFileDrag(ev)) return;
+    preventDragDefaults(ev);
+    dragDepth++;
+    showDropOverlay();
+  });
+
+  document.addEventListener("dragover", function (ev) {
+    if (!hasFileDrag(ev)) return;
+    preventDragDefaults(ev);
+  });
+
+  document.addEventListener("dragleave", function (ev) {
+    if (!hasFileDrag(ev)) return;
+    preventDragDefaults(ev);
+    dragDepth--;
+    if (dragDepth <= 0) hideDropOverlay();
+  });
+
+  document.addEventListener("drop", function (ev) {
+    if (!hasFileDrag(ev)) return;
+    preventDragDefaults(ev);
+    hideDropOverlay();
+    const files = ev.dataTransfer && ev.dataTransfer.files;
+    if (!files || !files.length) return;
+    const f = files[0];
+    const name = f.name.toLowerCase();
+    if (name.endsWith(".json")) {
+      loadJsonFile(f);
+    } else if (name.endsWith(".txt") || name.endsWith(".bin")) {
+      loadDataFile(f);
+    } else {
+      setErr("不支持的文件类型，请拖入 .txt / .bin / .json");
+    }
+  });
+
+  $("dataFile").addEventListener("change", function (ev) {
+    loadDataFile(ev.target.files[0]);
+    ev.target.value = "";
+  });
+
+  $("jsonFile").addEventListener("change", function (ev) {
+    loadJsonFile(ev.target.files[0]);
+    ev.target.value = "";
   });
 
   $("btnApply").addEventListener("click", function () {
