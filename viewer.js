@@ -617,6 +617,12 @@
           }
         }
         linesSinceYield++;
+        if (lineNum >= maxLines) {
+          aborted = true;
+          reader.cancel().catch(function () {});
+          resolve(lineNum);
+          return false;
+        }
         return true;
       }
 
@@ -763,85 +769,145 @@
     });
   }
 
+  function hasManualParseOpts(parseOpts) {
+    return parseOpts.skipRows > 0 || parseOpts.maxRows > 0 || parseOpts.decimate > 1;
+  }
+
+  function parseLogStreamFullFile(file, structure, onProgress) {
+    const seriesMeta = buildSeriesColumns(structure);
+    const expected = expectedColumnCount(structure);
+    const columns = allocateColumnBuffers(expected, 2048);
+    let row = 0;
+    let skipped = 0;
+    let firstBad = null;
+    let firstLine = true;
+
+    return streamFileLines(file, {
+      onLine: function (line, lineNum) {
+        if (firstLine && /^\s*#/.test(line)) {
+          firstLine = false;
+          return;
+        }
+        firstLine = false;
+        if (!line.trim()) return;
+        const n = countLineFields(line);
+        if (n !== expected) {
+          skipped++;
+          if (!firstBad) firstBad = { line: lineNum, cols: n };
+          return;
+        }
+        if (row >= columns[0].length) {
+          growColumns(columns, Math.max(row + 512, Math.ceil(columns[0].length * 1.5)));
+        }
+        parseLineToColumns(line, expected, columns, row);
+        row++;
+      },
+      onProgress: onProgress,
+    }).then(function () {
+      if (row === 0) {
+        throw new Error(
+          "没有完整数据行（期望每行 " +
+            expected +
+            " 列" +
+            (firstBad ? "；首个问题行 #" + firstBad.line + " 为 " + firstBad.cols + " 列" : "") +
+            "）"
+        );
+      }
+      trimColumns(columns, row);
+      return finalizeLogParse(structure, seriesMeta, columns, row, skipped, firstBad);
+    });
+  }
+
   function parseLogTextFromFile(file, structure, parseOpts, onProgress) {
     const expected = expectedColumnCount(structure);
 
-    return estimateValidRowsFromFile(file, expected)
-      .then(function (estimatedRows) {
-        const plan = computeParsePlan(parseOpts, estimatedRows, file.size);
-        if (shouldUseSinglePass(parseOpts, estimatedRows)) {
-          if (plan.autoDecimateApplied && onProgress) onProgress(0.02);
-          return parseLogStreamSinglePass(
-            function (handleLine, prog) {
-              return streamFileLines(file, {
-                onLine: handleLine,
-                onProgress: prog,
-              });
-            },
-            structure,
-            plan,
-            onProgress
+    if (
+      !hasManualParseOpts(parseOpts) &&
+      (!parseOpts.autoDecimate || file.size < AUTO_DECIMATE_ESTIMATE_BYTES)
+    ) {
+      return parseLogStreamFullFile(file, structure, onProgress);
+    }
+
+    return estimateValidRowsFromFile(file, expected).then(function (estimatedRows) {
+      const plan = computeParsePlan(parseOpts, estimatedRows, file.size);
+
+      if (!hasManualParseOpts(parseOpts) && !shouldUseSinglePass(parseOpts, estimatedRows)) {
+        return parseLogStreamFullFile(file, structure, onProgress);
+      }
+
+      if (shouldUseSinglePass(parseOpts, estimatedRows)) {
+        if (plan.autoDecimateApplied && onProgress) onProgress(0.02);
+        return parseLogStreamSinglePass(
+          function (handleLine, prog) {
+            return streamFileLines(file, {
+              onLine: handleLine,
+              onProgress: prog,
+            });
+          },
+          structure,
+          plan,
+          onProgress
+        );
+      }
+
+      const seriesMeta = buildSeriesColumns(structure);
+      let rowCount = 0;
+      let skipped = 0;
+      let firstBad = null;
+      let firstLine = true;
+
+      return streamFileLines(file, {
+        onLine: function (line, lineNum) {
+          if (firstLine && /^\s*#/.test(line)) {
+            firstLine = false;
+            return;
+          }
+          firstLine = false;
+          if (!line.trim()) return;
+          const n = countLineFields(line);
+          if (n === expected) rowCount++;
+          else {
+            skipped++;
+            if (!firstBad) firstBad = { line: lineNum, cols: n };
+          }
+        },
+        onProgress: function (frac) {
+          if (onProgress) onProgress(frac * 0.4);
+        },
+      }).then(function () {
+        if (rowCount === 0) {
+          throw new Error(
+            "没有完整数据行（期望每行 " +
+              expected +
+              " 列" +
+              (firstBad ? "；首个问题行 #" + firstBad.line + " 为 " + firstBad.cols + " 列" : "") +
+              "）"
           );
         }
-
-        const seriesMeta = buildSeriesColumns(structure);
-        let rowCount = 0;
-        let skipped = 0;
-        let firstBad = null;
-        let firstLine = true;
-
+        const columns = allocateColumnBuffers(expected, rowCount);
+        let row = 0;
+        firstLine = true;
         return streamFileLines(file, {
-          onLine: function (line, lineNum) {
+          onLine: function (line) {
             if (firstLine && /^\s*#/.test(line)) {
               firstLine = false;
               return;
             }
             firstLine = false;
             if (!line.trim()) return;
-            const n = countLineFields(line);
-            if (n === expected) rowCount++;
-            else {
-              skipped++;
-              if (!firstBad) firstBad = { line: lineNum, cols: n };
-            }
+            if (parseLineToColumns(line, expected, columns, row)) row++;
           },
           onProgress: function (frac) {
-            if (onProgress) onProgress(frac * 0.4);
+            if (onProgress) onProgress(0.4 + frac * 0.6);
           },
         }).then(function () {
-          if (rowCount === 0) {
-            throw new Error(
-              "没有完整数据行（期望每行 " +
-                expected +
-                " 列" +
-                (firstBad ? "；首个问题行 #" + firstBad.line + " 为 " + firstBad.cols + " 列" : "") +
-                "）"
-            );
+          if (row !== rowCount) {
+            throw new Error("解析行数不一致（" + row + " / " + rowCount + "）");
           }
-          const columns = allocateColumnBuffers(expected, rowCount);
-          let row = 0;
-          firstLine = true;
-          return streamFileLines(file, {
-            onLine: function (line) {
-              if (firstLine && /^\s*#/.test(line)) {
-                firstLine = false;
-                return;
-              }
-              firstLine = false;
-              if (!line.trim()) return;
-              if (parseLineToColumns(line, expected, columns, row)) row++;
-            },
-            onProgress: function (frac) {
-              if (onProgress) onProgress(0.4 + frac * 0.6);
-            },
-          }).then(function () {
-            if (row !== rowCount) {
-              throw new Error("解析行数不一致（" + row + " / " + rowCount + "）");
-            }
-            return finalizeLogParse(structure, seriesMeta, columns, rowCount, skipped, firstBad);
-          });
+          return finalizeLogParse(structure, seriesMeta, columns, rowCount, skipped, firstBad);
         });
       });
+    });
   }
 
   function parseLogBinary(buffer, structure, onProgress) {
@@ -951,8 +1017,9 @@
     "#b4f9f8",
   ];
   const MAX_POINTS = 6000;
-  const LARGE_TXT_BYTES = 16 * 1024 * 1024;
   const DEFAULT_MAX_STORED_ROWS = 300000;
+  /** 低于此体积时 autoDecimate 不可能触发，可跳过行数估计 */
+  const AUTO_DECIMATE_ESTIMATE_BYTES = 64 * 1024 * 1024;
   const STREAM_YIELD_LINES = 12000;
   const LS_S = "cuarm_logviz_structure_v1";
   const LS_K = "cuarm_logviz_selected_v1";
@@ -1445,7 +1512,7 @@
       s.GripperSize +
       " · schema=" +
       schemaLabel() +
-      (rawTxtFile ? " · 流式" : "");
+      " · 流式";
     setProgress(0.01);
     if (rawTxtFile) {
       setLoadLabel("流式解析 " + fileName + "（" + formatBytes(rawTxtFile.size) + "）…");
@@ -1567,51 +1634,30 @@
       r.readAsArrayBuffer(f);
       return;
     }
-    if (f.size > LARGE_TXT_BYTES) {
-      rawTxtFile = f;
-      rawText = null;
-      rawBinary = null;
-      useSampleTimeAxis = false;
-      loadedColumns = null;
-      setErr(null);
-      setProgress(0.01);
-      setLoadLabel("检测大文件 " + f.name + "（" + formatBytes(f.size) + "）…");
-      schemasReady
-        .then(function () {
-          return sniffTxtFile(f);
-        })
-        .then(function (colCount) {
-          const plan = resolveTxtParsePlan(colCount, readStructureFromForm());
-          setActiveSchema(plan.schemaId);
-          applyStructureToForm(plan.structure);
-          saveStructureForm(plan.structure);
-          parseNow();
-        })
-        .catch(function (e) {
-          rawTxtFile = null;
-          setProgress(1);
-          setErr(e.message || String(e));
-        });
-      return;
-    }
-    rawTxtFile = null;
-    const r = new FileReader();
-    r.onload = function () {
-      rawText = String(r.result);
-      rawBinary = null;
-      useSampleTimeAxis = false;
-      loadedColumns = null;
-      schemasReady.then(function () {
-        try {
-          const plan = resolveTxtParsePlan(rawText, readStructureFromForm());
-          setActiveSchema(plan.schemaId);
-          applyStructureToForm(plan.structure);
-          saveStructureForm(plan.structure);
-        } catch (_) {}
+    rawTxtFile = f;
+    rawText = null;
+    rawBinary = null;
+    useSampleTimeAxis = false;
+    loadedColumns = null;
+    setErr(null);
+    setProgress(0.01);
+    setLoadLabel("加载 " + f.name + "（" + formatBytes(f.size) + "）…");
+    schemasReady
+      .then(function () {
+        return sniffTxtFile(f);
+      })
+      .then(function (colCount) {
+        const plan = resolveTxtParsePlan(colCount, readStructureFromForm());
+        setActiveSchema(plan.schemaId);
+        applyStructureToForm(plan.structure);
+        saveStructureForm(plan.structure);
         parseNow();
+      })
+      .catch(function (e) {
+        rawTxtFile = null;
+        setProgress(1);
+        setErr(e.message || String(e));
       });
-    };
-    r.readAsText(f);
   }
 
   function loadJsonFile(f) {
