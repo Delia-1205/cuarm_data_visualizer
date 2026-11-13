@@ -110,14 +110,65 @@
 
   var logSchema = FALLBACK_SCHEMA;
   var rtControlSchema = null;
+  var rtControlSchemaLegacy = null;
+  var activeRtControlSchema = null;
   var activeSchemaId = "telemetry";
 
+  const RT_TASK_FIXED_NAMES = new Set([
+    "task_target_before_interpolation",
+    "task_sliced_tar",
+    "task_pose",
+  ]);
+
+  function cloneRtControlSchemaLegacy(full) {
+    if (!full || !Array.isArray(full.per_arm)) return null;
+    return {
+      version: full.version,
+      id: full.id,
+      source: full.source,
+      note: full.note,
+      meta: full.meta,
+      per_arm: full.per_arm.filter(function (b) {
+        return !(b.kind === "fixed" && RT_TASK_FIXED_NAMES.has(b.name));
+      }),
+      per_gripper: full.per_gripper,
+      categories: full.categories,
+    };
+  }
+
+  function rtControlSchemaCandidates() {
+    const out = [];
+    if (rtControlSchema) out.push(rtControlSchema);
+    if (rtControlSchemaLegacy && rtControlSchemaLegacy !== rtControlSchema) {
+      out.push(rtControlSchemaLegacy);
+    }
+    return out;
+  }
+
+  function setActiveRtControlSchema(schema) {
+    activeRtControlSchema = schema || rtControlSchema;
+  }
+
   function getActiveSchema() {
-    return activeSchemaId === "rt_control" && rtControlSchema ? rtControlSchema : logSchema;
+    if (activeSchemaId === "rt_control") {
+      return activeRtControlSchema || rtControlSchema || logSchema;
+    }
+    return logSchema;
   }
 
   function setActiveSchema(id) {
     activeSchemaId = id === "rt_control" && rtControlSchema ? "rt_control" : "telemetry";
+    if (activeSchemaId !== "rt_control") activeRtControlSchema = null;
+  }
+
+  function applyTxtParsePlan(plan) {
+    if (!plan) return;
+    setActiveSchema(plan.schemaId);
+    if (plan.schemaId === "rt_control" && plan.rtSchema) {
+      setActiveRtControlSchema(plan.rtSchema);
+    } else if (plan.schemaId === "rt_control" && rtControlSchema) {
+      setActiveRtControlSchema(rtControlSchema);
+    }
   }
 
   function categorySetsFromSchema(schema) {
@@ -250,17 +301,23 @@
   }
 
   function inferRtControlStructure(colCount) {
-    if (!rtControlSchema) return null;
+    const schemas = rtControlSchemaCandidates();
+    if (!schemas.length) return null;
     const known = [[7, 2, 7], [7, 7], [6, 6], [6], [7]];
-    for (let i = 0; i < known.length; i++) {
-      const js = known[i];
-      const s = {
-        ArmSize: js.length,
-        JointSize: js.slice(),
-        GripperSize: 0,
-        GripperJointSize: [],
-      };
-      if (expectedColumnCount(s, rtControlSchema) === colCount) return s;
+    for (let si = 0; si < schemas.length; si++) {
+      const schema = schemas[si];
+      for (let i = 0; i < known.length; i++) {
+        const js = known[i];
+        const s = {
+          ArmSize: js.length,
+          JointSize: js.slice(),
+          GripperSize: 0,
+          GripperJointSize: [],
+        };
+        if (expectedColumnCount(s, schema) === colCount) {
+          return { structure: s, schema: schema };
+        }
+      }
     }
     return null;
   }
@@ -273,11 +330,20 @@
       return { schemaId: "telemetry", structure: formStructure };
     }
     if (rtControlSchema) {
-      if (expectedColumnCount(formStructure, rtControlSchema) === colCount) {
-        return { schemaId: "rt_control", structure: formStructure };
+      const schemas = rtControlSchemaCandidates();
+      for (let i = 0; i < schemas.length; i++) {
+        if (expectedColumnCount(formStructure, schemas[i]) === colCount) {
+          return { schemaId: "rt_control", structure: formStructure, rtSchema: schemas[i] };
+        }
       }
       const inferred = inferRtControlStructure(colCount);
-      if (inferred) return { schemaId: "rt_control", structure: inferred };
+      if (inferred) {
+        return {
+          schemaId: "rt_control",
+          structure: inferred.structure,
+          rtSchema: inferred.schema,
+        };
+      }
     }
     return { schemaId: activeSchemaId, structure: formStructure };
   }
@@ -1492,7 +1558,7 @@
         const colCount = sniffTxtColumnCount(rawText);
         if (colCount > 0) {
           const plan = resolveTxtParsePlan(colCount, s);
-          setActiveSchema(plan.schemaId);
+          applyTxtParsePlan(plan);
           s = plan.structure;
         }
       }
@@ -1648,7 +1714,7 @@
       })
       .then(function (colCount) {
         const plan = resolveTxtParsePlan(colCount, readStructureFromForm());
-        setActiveSchema(plan.schemaId);
+        applyTxtParsePlan(plan);
         applyStructureToForm(plan.structure);
         saveStructureForm(plan.structure);
         parseNow();
@@ -1914,6 +1980,8 @@
     }),
     loadSchemaJson("log_schema_rt_control.json", function (j) {
       rtControlSchema = j;
+      rtControlSchemaLegacy = cloneRtControlSchemaLegacy(j);
+      setActiveRtControlSchema(j);
     }),
   ]).then(function () {
     refreshColInfo();

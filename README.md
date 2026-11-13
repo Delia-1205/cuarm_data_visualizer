@@ -39,24 +39,29 @@ python3 -m http.server 8765
 
 ## 字段从哪来？
 
-日志列布局以 `cuarm_rt_control/app/log_utils.ipp` 的 `writeToLogFile` 为准。
+可视化按**列数**自动选 schema（状态栏 `schema=telemetry` 或 `rt_control`）。完整说明见 **[fields.html](fields.html)**。
+
+| 格式 | C++ 写盘 | Schema 文件 | 典型列数（双臂 [7,2,7]） |
+|------|----------|-------------|---------------------------|
+| 遥测 TXT / CTLG `.bin` | `log_utils.ipp::writeToLogFile` | `log_schema.json` | 依关节数 |
+| rt_control 文本 | `rt_control.cpp::write_data_task` | `log_schema_rt_control.json` | **439**（含 task 三组×6）；旧版 **385** |
 
 | 文件 | 作用 |
 |------|------|
-| `log_schema.json` | 字段布局定义（改 C++ 写日志后同步改这个） |
-| `log_*.structure.json` | 运行时由控制程序自动生成，含关节数 + 完整列名 |
+| `log_schema.json` / `log_schema_rt_control.json` | 离线 TXT 列布局（与写盘顺序一致） |
+| `log_*.structure.json` | 遥测 sidecar：关节数 + 列名 |
 
-改 `writeToLogFile` 时同步三处：
+改遥测写盘时同步：`writeToLogFile`、`appendLogColumnNames`、`log_schema.json`。
 
-1. `log_utils.ipp` 里的 `writeToLogFile`（写数据）
-2. 同文件的 `appendLogColumnNames`（写 sidecar 列名，顺序必须一致）
-3. `cuarm_data_visualizer/log_schema.json`（网页离线/旧日志解析）
+改 `write_data_task` 时同步：`rt_control.cpp` 写盘顺序、`log_schema_rt_control.json`、[fields.html](fields.html) rt_control 小节。
 
 ## 字段含义
 
-**单位**：非力矩模式时，角度相关量写成 **度**；力矩模式保持原单位。`*_cost` 为微秒。`tool_pose` 的 xyz 是米、姿态是四元数。笛卡尔 `rx/ry/rz` 为旋转向量（非力矩时转成度）。
+下文为 **遥测**（`log_schema.json`）。**rt_control 文本**（`motion_type`、`task_sliced_tar_*`、`gripper_command` 等）见 [fields.html#rt-control](fields.html#rt-control)。
 
-### Meta（整机）
+**单位**：非力矩模式时，角度相关量写成 **度**；力矩模式保持原单位。`*_cost` 为微秒。`tool_pose` 的 xyz 是米、姿态是四元数。遥测里笛卡尔 `rx/ry/rz` 为旋转向量；**rt_control** task 三组中 `rx/ry/rz` 在日志里为**度**。
+
+### Meta（整机，遥测）
 
 | 字段 | 含义 |
 |------|------|
@@ -119,10 +124,19 @@ python3 -m http.server 8765
 
 关节空间看 `sliced_tar`，笛卡尔/直线看 `task_sliced_tar`。
 
-### 夹爪（有夹爪才写）
+### 夹爪（有夹爪才写，遥测）
 
 | 字段 | 含义 |
 |------|------|
 | `gripper_target` | 夹爪目标 |
 | `gripper_position` | 夹爪实际位置 |
 | `gripper_diagnostic_flags` | 夹爪诊断位 |
+
+### rt_control 文本（摘要）
+
+- **Meta**：`running_cost`、`robotics_*_cost` 拆分、`command_mode`、`motion_type`（无 `system_state` / `plan_result`）。
+- **关节主链**：每关节 8 列 `sliced_tar` … `motor_torque` → `tool_pose`×7 → `target_before_interpolation` →（可选）task 三组×6 → 重力/饱和/阻抗/力矩/摩擦等。
+- **MoveL**：看 `Meta.motion_type=4` 与 `Arm*.task_sliced_tar_*`；**MoveJ** 看 `sliced_tar`。
+- **夹爪**：`gripper_command` / `gripper_act_set_command` / `gripper_position`（非 `gripper_target`）。
+
+详见 [fields.html](fields.html)。

@@ -16,6 +16,17 @@
     </div>
   </header>
   <div class="docs-wrap">
+    <h2>两种日志格式</h2>
+    <p>可视化器会按列数自动选用 schema（侧边栏显示 <code>schema=telemetry</code> 或 <code>rt_control</code>）：</p>
+    <table>
+      <thead><tr><th>来源</th><th>典型列数（双臂 [7,2,7]）</th><th>定义文件</th></tr></thead>
+      <tbody>
+        <tr><td><strong>遥测</strong> <code>telemetry</code> / CTLG <code>.bin</code> / <code>writeToLogFile</code></td><td>依结构（如 6 关节 ≈155）</td><td><code>log_schema.json</code></td></tr>
+        <tr><td><strong>rt_control 文本</strong> <code>write_data_task</code></td><td><strong>439</strong>（含 task/line 三组×6）；旧文件无 task 块为 <strong>385</strong></td><td><code>log_schema_rt_control.json</code></td></tr>
+      </tbody>
+    </table>
+  <p>下列 <strong>Meta / 关节 / 任务</strong> 分节默认描述 <strong>遥测</strong>。rt_control 专用列见下文 <a href="#rt-control">「rt_control 文本日志」</a>。</p>
+
     <h2>时间轴</h2>
     <p>默认用 <code>Meta.running_cost</code>（控制周期耗时，单位 <strong>微秒</strong>）做累积：</p>
     <ul>
@@ -100,6 +111,74 @@
         <tr><td><code>gripper_diagnostic_flags</code></td><td>夹爪诊断位</td></tr>
       </tbody>
     </table>
+
+    <h2 id="rt-control">rt_control 文本日志（<code>write_data_task</code>）</h2>
+    <p>由 <code>cuarm_rt_control/example/rt_control.cpp</code> 写盘，无表头、无 wall-clock 时间戳；横轴仍用 <code>Meta.running_cost</code> 累积。与遥测相比：<strong>不含</strong> <code>pid_cmd / guard_pos_cmd / sat_cmd / jump_cmd / arm_diagnostic_flags</code> 等列；Meta 为<strong>耗时拆分 + 模式枚举</strong>，不是 <code>system_state</code> 那一套。</p>
+
+    <h3>Meta（12 列，顺序固定）</h3>
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>running_cost</code></td><td>整圈控制周期墙钟时间（含 sleep），微秒；时间轴来源</td></tr>
+        <tr><td><code>robotics_total_cost</code></td><td>规划器 <code>update</code> 总耗时（含下列子项）</td></tr>
+        <tr><td><code>communication_cost</code></td><td>到本周期状态打包、入写盘队列前（sleep 前）</td></tr>
+        <tr><td><code>hardware_communication_cost</code></td><td>本周期硬件读写段耗时</td></tr>
+        <tr><td><code>robotics_setup_cost</code></td><td>规划器 setup 段（指令解析、插值改参等）</td></tr>
+        <tr><td><code>robotics_Null_cost</code></td><td>零空间相关耗时</td></tr>
+        <tr><td><code>robotics_FK_cost</code></td><td>正向运动学</td></tr>
+        <tr><td><code>robotics_IK_cost</code></td><td>逆运动学（Task / MoveL 常见非零）</td></tr>
+        <tr><td><code>robotics_ID_cost</code></td><td>逆动力学（重力等）</td></tr>
+        <tr><td><code>robotics_simulation_addition_cost</code></td><td>仿真附加计算</td></tr>
+        <tr><td><code>command_mode</code></td><td>执行器模式：<code>0</code> 位置 / <code>1</code> 速度 / <code>2</code> 力矩（影响角度是否写成度）</td></tr>
+        <tr><td><code>motion_type</code></td><td>运动类型：<code>0</code> 关节 MoveJ / <code>1</code> Null / <code>2</code> Task / <code>3</code> Motor / <code>4</code> MoveL（直线）/ <code>5</code> 力控算法 / <code>6–8</code> Jog / <code>9</code> 回放</td></tr>
+      </tbody>
+    </table>
+    <p>诊断 J/L 切换：看 <code>motion_type</code> 跳变 alongside <code>robotics_IK_cost</code>、关节 <code>sliced_tar</code> vs <code>task_sliced_tar_*</code>。</p>
+
+    <h3>每臂列顺序（写盘 / 字段树一致）</h3>
+    <ol>
+      <li>每关节 8 列交错：<code>sliced_tar</code> → <code>motor_target</code> → <code>joint_position</code> → <code>joint_velocity</code> → <code>joint_acceleration</code> → <code>motor_position</code> → <code>motor_velocity</code> → <code>motor_torque</code></li>
+      <li><code>tool_pose</code> 7 列：x,y,z（m）+ qw,qx,qy,qz</li>
+      <li>每关节 <code>target_before_interpolation</code></li>
+      <li><strong>（439 列版本）</strong> 固定 6 列 ×3：<code>task_target_before_interpolation</code>、<code>task_sliced_tar</code>、<code>task_pose</code>（各 x,y,z,rx,ry,rz）</li>
+      <li>每关节 <code>motor_raw_position</code>、<code>joint_gravity</code>、<code>gravity</code>、<code>sat_motor_cmd</code>、<code>joint_impedance</code>、<code>impedance</code>、<code>joint_torque</code>、<code>torque_sensor_raw</code>、<code>torque_sensor</code>、<code>encoder_sensor_raw</code>、<code>friction</code>、<code>gravity_kd_effect</code>、<code>filtered_joint_vel</code></li>
+    </ol>
+    <p><code>sliced_tar</code>：插值后本周期关节目标（规划器 <code>interpolated_target</code>）。<code>motor_target</code>：下发驱动的最终命令。对比跟踪：<code>sliced_tar</code> vs <code>joint_position</code>（规划器状态）或 <code>motor_position</code>（硬件反馈）。</p>
+
+    <h3>task / 直线（MoveL）三组 6 维</h3>
+    <table>
+      <thead><tr><th>前缀</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>task_target_before_interpolation_{x,y,z,rx,ry,rz}</code></td><td>本周期 Task 插值<strong>前</strong>目标：平移 m；姿态 rx,ry,rz 在日志里为<strong>度</strong>（与 <code>motion_type</code> 为 Task / TaskLine 时写入）</td></tr>
+        <tr><td><code>task_sliced_tar_{x,y,z,rx,ry,rz}</code></td><td>Task 空间插值后目标（<code>task_interpolated_target</code>）；仅在 <code>motion_type = MoveL (4)</code> 时更新，MoveJ 时多为 0</td></tr>
+        <tr><td><code>task_pose_{x,y,z,rx,ry,rz}</code></td><td>当前任务空间位姿（FK / 任务表示）；平移 m，姿态为度</td></tr>
+      </tbody>
+    </table>
+    <p>MoveL 段优先看 <code>task_sliced_tar</code> 与 <code>tool_pose</code>；MoveJ 段看关节 <code>sliced_tar</code>。385 列旧日志无上述三组，可视化器自动用 legacy schema。</p>
+
+    <h3>其他每关节量（rt_control）</h3>
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>joint_gravity</code> / <code>gravity</code></td><td>关节空间 / 电机侧重力补偿输出</td></tr>
+        <tr><td><code>sat_motor_cmd</code></td><td>软限位饱和后的电机命令（规划器 <code>sat_motor_cmd_</code>）</td></tr>
+        <tr><td><code>joint_impedance</code> / <code>impedance</code></td><td>关节 / 电机侧阻抗控制相关量</td></tr>
+        <tr><td><code>torque_sensor_raw</code> / <code>torque_sensor</code></td><td>力矩传感器原始 / 处理后</td></tr>
+        <tr><td><code>encoder_sensor_raw</code> / <code>motor_raw_position</code></td><td>列在 schema 中保留；当前 <code>rt_control</code> 写盘路径<strong>可能未填充</strong>，曲线常为 0</td></tr>
+        <tr><td><code>friction</code> / <code>filtered_joint_vel</code> / <code>gravity_kd_effect</code></td><td>摩擦补偿、滤波关节速度、重力环阻尼项</td></tr>
+      </tbody>
+    </table>
+
+    <h3>夹爪（rt_control，有夹爪才写）</h3>
+    <table>
+      <thead><tr><th>字段</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code>gripper_command</code></td><td>面板下发的夹爪关节命令</td></tr>
+        <tr><td><code>gripper_act_set_command</code></td><td>驱动器实际 set 值</td></tr>
+        <tr><td><code>gripper_position</code></td><td>夹爪关节反馈位置</td></tr>
+      </tbody>
+    </table>
+    <p>改 <code>write_data_task</code> 列顺序时同步 <code>log_schema_rt_control.json</code> 与本说明。</p>
   </div>
   <script>
     if (window.self !== window.top) document.documentElement.classList.add("embedded");

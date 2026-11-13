@@ -2,7 +2,7 @@
   "version": 1,
   "id": "rt_control",
   "source": "cuarm_rt_control/example/rt_control.cpp::write_data_task",
-  "note": "legacy TXT 日志（rt_control 写盘格式）；与 log_schema.json（telemetry_sink）不同",
+  "note": "legacy TXT（write_data_task）；含 task/line 三列×6 后为 439 列（Arm [7,2,7]、无夹爪列）；旧版无 task 块为 385 列",
   "meta": [
     "running_cost",
     "robotics_total_cost",
@@ -37,6 +37,21 @@
       "labels": ["x", "y", "z", "qw", "qx", "qy", "qz"]
     },
     { "kind": "per_joint", "field": "target_before_interpolation" },
+    {
+      "kind": "fixed",
+      "name": "task_target_before_interpolation",
+      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+    },
+    {
+      "kind": "fixed",
+      "name": "task_sliced_tar",
+      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+    },
+    {
+      "kind": "fixed",
+      "name": "task_pose",
+      "labels": ["x", "y", "z", "rx", "ry", "rz"]
+    },
     { "kind": "per_joint", "field": "motor_raw_position" },
     { "kind": "per_joint", "field": "joint_gravity" },
     { "kind": "per_joint", "field": "gravity" },
@@ -61,6 +76,8 @@
       "sliced_tar",
       "motor_target",
       "target_before_interpolation",
+      "task_target_before_interpolation",
+      "task_sliced_tar",
       "sat_motor_cmd",
       "gripper_command",
       "gripper_act_set_command"
@@ -72,6 +89,7 @@
       "motor_position",
       "motor_velocity",
       "tool_pose",
+      "task_pose",
       "motor_raw_position",
       "filtered_joint_vel",
       "gripper_position",
